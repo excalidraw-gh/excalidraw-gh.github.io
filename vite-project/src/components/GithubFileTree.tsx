@@ -22,64 +22,169 @@ import {
   DialogClose,
 } from "@/components/ui/dialog";
 
-// --- Interfaces, API Base, Helper Functions remain the same ---
-interface FileSystemNode { type: 'file' | 'directory'; name: string; path: string; sha?: string; children?: FileSystemNode[]; }
+// --- Interfaces ---
+interface FileSystemNode {
+  type: 'file' | 'directory';
+  name: string;
+  path: string;
+  sha?: string;
+  children?: FileSystemNode[];
+}
+
+// --- GitHub API Base URL ---
 const GITHUB_API_BASE = "https://api.github.com";
 
-// --- fetchFileTree ---
+// --- API Helper Functions ---
+
+// Fetch recursive file tree
 async function fetchFileTree(pat: string, repoFullName: string, branchName: string): Promise<FileSystemNode[]> {
-    const response = await fetch(`${GITHUB_API_BASE}/repos/${repoFullName}/git/trees/${branchName}?recursive=1`, { headers: { Authorization: `token ${pat}`, Accept: "application/vnd.github.v3+json" } });
-    if (!response.ok) { const errorData = await response.json().catch(() => ({})); throw new Error(`获取文件树失败: ${response.status} ${response.statusText} - ${errorData.message || '未知错误'}`); }
+    const url = `${GITHUB_API_BASE}/repos/${repoFullName}/git/trees/${branchName}?recursive=1`;
+    const response = await fetch(url, { headers: { Authorization: `token ${pat}`, Accept: "application/vnd.github.v3+json" } });
+    if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(`获取文件树失败: ${response.status} ${response.statusText} - ${errorData.message || '未知错误'}`);
+    }
     const data = await response.json();
-    const treeData: FileSystemNode[] = data.tree.map((item: any) => ({ type: item.type === 'tree' ? 'directory' : 'file', name: item.path.split('/').pop(), path: item.path, sha: item.sha }));
+    if (!data.tree) {
+        console.warn("Received empty or invalid tree data from GitHub API for", repoFullName, branchName);
+        return []; // Return empty array if tree is missing
+    }
+    const treeData: FileSystemNode[] = data.tree.map((item: any) => ({
+        type: item.type === 'tree' ? 'directory' : 'file',
+        name: item.path.split('/').pop() || item.path, // Handle potential empty name after split
+        path: item.path,
+        sha: item.sha,
+    }));
+
+    // Build hierarchical structure
     function buildTree(nodes: FileSystemNode[]): FileSystemNode[] {
-        const root: FileSystemNode[] = []; const nodeMap: { [path: string]: FileSystemNode } = {};
-        nodes.forEach(node => { nodeMap[node.path] = node; const pathParts = node.path.split('/'); if (pathParts.length === 1) { root.push(node); } else { const parentPath = pathParts.slice(0, -1).join('/'); const parent = nodeMap[parentPath]; if (parent) { parent.children = parent.children || []; parent.children.push(node); } else { console.warn("Parent node not found for:", node.path); root.push(node); } } });
-        const sortNodes = (nodesToSort: FileSystemNode[]) => { nodesToSort.sort((a, b) => { if (a.type === 'directory' && b.type !== 'directory') return -1; if (a.type !== 'directory' && b.type === 'directory') return 1; return a.name.localeCompare(b.name); }); nodesToSort.forEach(node => { if (node.children) sortNodes(node.children); }); };
-        sortNodes(root); return root;
+        const root: FileSystemNode[] = [];
+        const nodeMap: { [path: string]: FileSystemNode } = {};
+        // Sort nodes by path length first to ensure parents are processed before children
+        nodes.sort((a, b) => a.path.split('/').length - b.path.split('/').length);
+
+        nodes.forEach(node => {
+            nodeMap[node.path] = node; // Add node to map
+            const pathParts = node.path.split('/');
+            if (pathParts.length === 1) {
+                root.push(node); // Root level node
+            } else {
+                const parentPath = pathParts.slice(0, -1).join('/');
+                const parent = nodeMap[parentPath];
+                if (parent && parent.type === 'directory') { // Ensure parent is a directory
+                    parent.children = parent.children || [];
+                    parent.children.push(node);
+                } else {
+                    // If parent not found or not a directory (unexpected for recursive tree), add to root
+                    console.warn("Parent node not found or not a directory for:", node.path, "Parent path:", parentPath);
+                    root.push(node);
+                }
+            }
+        });
+
+        // Sort children within each directory
+        const sortNodes = (nodesToSort: FileSystemNode[]) => {
+            nodesToSort.sort((a, b) => {
+                if (a.type === 'directory' && b.type !== 'directory') return -1;
+                if (a.type !== 'directory' && b.type === 'directory') return 1;
+                return a.name.localeCompare(b.name);
+            });
+            nodesToSort.forEach(node => {
+                if (node.children) sortNodes(node.children);
+            });
+        };
+        sortNodes(root);
+        return root;
     }
     return buildTree(treeData);
 }
-// --- getFileSha ---
+
+// Get file SHA using Contents API
 async function getFileSha(pat: string, repoFullName: string, path: string, branch: string): Promise<string | null> {
     const url = `${GITHUB_API_BASE}/repos/${repoFullName}/contents/${path}?ref=${branch}`;
-    try { const response = await fetch(url, { headers: { Authorization: `token ${pat}`, Accept: "application/vnd.github.v3+json" } }); if (!response.ok) { if (response.status === 404) return null; console.error(`Failed to get SHA for ${path}: ${response.status}`); return null; } const data = await response.json(); return data.sha; } catch (error) { console.error(`Error fetching SHA for ${path}:`, error); return null; }
+    try {
+        const response = await fetch(url, { headers: { Authorization: `token ${pat}`, Accept: "application/vnd.github.v3+json" } });
+        if (!response.ok) {
+            if (response.status === 404) return null;
+            console.error(`Failed to get SHA for ${path}: ${response.status}`);
+            return null;
+        }
+        const data = await response.json();
+        return data.sha;
+    } catch (error) {
+        console.error(`Error fetching SHA for ${path}:`, error);
+        return null;
+    }
 }
-// --- deleteGithubFile ---
+
+// Delete a file using Contents API
 async function deleteGithubFile(pat: string, repoFullName: string, path: string, sha: string, branch: string, commitMessage: string): Promise<void> {
     const url = `${GITHUB_API_BASE}/repos/${repoFullName}/contents/${path}`;
     const response = await fetch(url, { method: 'DELETE', headers: { Authorization: `token ${pat}`, Accept: "application/vnd.github.v3+json", 'Content-Type': 'application/json' }, body: JSON.stringify({ message: commitMessage, sha: sha, branch: branch }) });
-    if (!response.ok) { const errorData = await response.json().catch(() => ({})); throw new Error(`删除文件失败: ${response.status} ${response.statusText} - ${errorData.message || '未知错误'}`); } console.log(`File ${path} deleted successfully.`);
+    if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(`删除文件失败: ${response.status} ${response.statusText} - ${errorData.message || '未知错误'}`);
+    }
+    console.log(`File ${path} deleted successfully.`);
 }
-// --- createGithubFile ---
+
+// Create a new file using Contents API
 async function createGithubFile(pat: string, repoFullName: string, path: string, content: string, branch: string, commitMessage: string): Promise<void> {
-    const url = `${GITHUB_API_BASE}/repos/${repoFullName}/contents/${path}`; const encodedContent = btoa(unescape(encodeURIComponent(content)));
+    const url = `${GITHUB_API_BASE}/repos/${repoFullName}/contents/${path}`;
+    const encodedContent = btoa(unescape(encodeURIComponent(content)));
     const response = await fetch(url, { method: 'PUT', headers: { Authorization: `token ${pat}`, Accept: "application/vnd.github.v3+json", 'Content-Type': 'application/json' }, body: JSON.stringify({ message: commitMessage, content: encodedContent, branch: branch }) });
-    if (!response.ok && response.status !== 201) { const errorData = await response.json().catch(() => ({})); throw new Error(`创建文件失败: ${response.status} ${response.statusText} - ${errorData.message || '未知错误'}`); } console.log(`File ${path} created successfully.`);
+    if (!response.ok && response.status !== 201) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(`创建文件失败: ${response.status} ${response.statusText} - ${errorData.message || '未知错误'}`);
+    }
+    console.log(`File ${path} created successfully.`);
 }
-// --- getRef ---
+
+// Get Reference (Branch) Info
 async function getRef(pat: string, repoFullName: string, branch: string): Promise<{ object: { sha: string } }> {
-    const url = `${GITHUB_API_BASE}/repos/${repoFullName}/git/ref/heads/${branch}`; const response = await fetch(url, { headers: { Authorization: `token ${pat}`, Accept: "application/vnd.github.v3+json" } }); if (!response.ok) throw new Error(`获取分支引用失败: ${response.status}`); return response.json();
+    const url = `${GITHUB_API_BASE}/repos/${repoFullName}/git/refs/heads/${branch}`;
+    const response = await fetch(url, { headers: { Authorization: `token ${pat}`, Accept: "application/vnd.github.v3+json" } });
+    if (!response.ok) throw new Error(`获取分支引用失败: ${response.status}`);
+    return response.json();
 }
-// --- getCommit ---
+
+// Get Commit Info
 async function getCommit(pat: string, repoFullName: string, commitSha: string): Promise<{ tree: { sha: string } }> {
-    const url = `${GITHUB_API_BASE}/repos/${repoFullName}/git/commits/${commitSha}`; const response = await fetch(url, { headers: { Authorization: `token ${pat}`, Accept: "application/vnd.github.v3+json" } }); if (!response.ok) throw new Error(`获取 Commit 失败: ${response.status}`); return response.json();
+    const url = `${GITHUB_API_BASE}/repos/${repoFullName}/git/commits/${commitSha}`;
+    const response = await fetch(url, { headers: { Authorization: `token ${pat}`, Accept: "application/vnd.github.v3+json" } });
+    if (!response.ok) throw new Error(`获取 Commit 失败: ${response.status}`);
+    return response.json();
 }
-// --- getTree ---
+
+// Get Tree Info (needed for file mode)
 async function getTree(pat: string, repoFullName: string, treeSha: string): Promise<{ tree: Array<{ path: string; mode: string; type: string; sha: string }> }> {
-    const url = `${GITHUB_API_BASE}/repos/${repoFullName}/git/trees/${treeSha}`; const response = await fetch(url, { headers: { Authorization: `token ${pat}`, Accept: "application/vnd.github.v3+json" } }); if (!response.ok) throw new Error(`获取 Tree 失败: ${response.status}`); return response.json();
+    const url = `${GITHUB_API_BASE}/repos/${repoFullName}/git/trees/${treeSha}`;
+    const response = await fetch(url, { headers: { Authorization: `token ${pat}`, Accept: "application/vnd.github.v3+json" } });
+    if (!response.ok) throw new Error(`获取 Tree 失败: ${response.status}`);
+    return response.json();
 }
-// --- createTree ---
+
+// Create a new Tree
 async function createTree(pat: string, repoFullName: string, baseTreeSha: string, treeNodes: Array<{ path: string; mode: string; type: string; sha: string | null }>): Promise<{ sha: string }> {
-    const url = `${GITHUB_API_BASE}/repos/${repoFullName}/git/trees`; const response = await fetch(url, { method: 'POST', headers: { Authorization: `token ${pat}`, Accept: "application/vnd.github.v3+json", 'Content-Type': 'application/json' }, body: JSON.stringify({ base_tree: baseTreeSha, tree: treeNodes }) }); if (!response.ok) { const errorData = await response.json().catch(() => ({})); throw new Error(`创建 Tree 失败: ${response.status} - ${errorData.message}`); } return response.json();
+    const url = `${GITHUB_API_BASE}/repos/${repoFullName}/git/trees`;
+    const response = await fetch(url, { method: 'POST', headers: { Authorization: `token ${pat}`, Accept: "application/vnd.github.v3+json", 'Content-Type': 'application/json' }, body: JSON.stringify({ base_tree: baseTreeSha, tree: treeNodes }) });
+    if (!response.ok) { const errorData = await response.json().catch(() => ({})); throw new Error(`创建 Tree 失败: ${response.status} - ${errorData.message}`); }
+    return response.json();
 }
-// --- createCommit ---
+
+// Create a new Commit
 async function createCommit(pat: string, repoFullName: string, message: string, treeSha: string, parentCommitSha: string): Promise<{ sha: string }> {
-    const url = `${GITHUB_API_BASE}/repos/${repoFullName}/git/commits`; const response = await fetch(url, { method: 'POST', headers: { Authorization: `token ${pat}`, Accept: "application/vnd.github.v3+json", 'Content-Type': 'application/json' }, body: JSON.stringify({ message, tree: treeSha, parents: [parentCommitSha] }) }); if (!response.ok) { const errorData = await response.json().catch(() => ({})); throw new Error(`创建 Commit 失败: ${response.status} - ${errorData.message}`); } return response.json();
+    const url = `${GITHUB_API_BASE}/repos/${repoFullName}/git/commits`;
+    const response = await fetch(url, { method: 'POST', headers: { Authorization: `token ${pat}`, Accept: "application/vnd.github.v3+json", 'Content-Type': 'application/json' }, body: JSON.stringify({ message, tree: treeSha, parents: [parentCommitSha] }) });
+    if (!response.ok) { const errorData = await response.json().catch(() => ({})); throw new Error(`创建 Commit 失败: ${response.status} - ${errorData.message}`); }
+    return response.json();
 }
-// --- updateRef ---
+
+// Update Reference (Branch)
 async function updateRef(pat: string, repoFullName: string, branch: string, commitSha: string): Promise<void> {
-    const url = `${GITHUB_API_BASE}/repos/${repoFullName}/git/refs/heads/${branch}`; const response = await fetch(url, { method: 'PATCH', headers: { Authorization: `token ${pat}`, Accept: "application/vnd.github.v3+json", 'Content-Type': 'application/json' }, body: JSON.stringify({ sha: commitSha }) }); if (!response.ok) { const errorData = await response.json().catch(() => ({})); throw new Error(`更新分支引用失败: ${response.status} - ${errorData.message}`); }
+    const url = `${GITHUB_API_BASE}/repos/${repoFullName}/git/refs/heads/${branch}`;
+    const response = await fetch(url, { method: 'PATCH', headers: { Authorization: `token ${pat}`, Accept: "application/vnd.github.v3+json", 'Content-Type': 'application/json' }, body: JSON.stringify({ sha: commitSha }) });
+    if (!response.ok) { const errorData = await response.json().catch(() => ({})); throw new Error(`更新分支引用失败: ${response.status} - ${errorData.message}`); }
 }
 // --- End Helper Functions ---
 
@@ -93,10 +198,11 @@ interface TreeNodeProps {
   onRenameRequest: (oldPath: string, newName: string) => Promise<void>;
   onDeleteRequest: (path: string, type: 'file' | 'directory') => Promise<void>;
   onApiError: (message: string) => void;
+  onFileNodeClick: (filePath: string) => void;
 }
 
-function TreeNode({ node, level, repoFullName, branchName, onRenameRequest, onDeleteRequest, onApiError }: TreeNodeProps) {
-  const { t } = useTranslation(); // Initialize hook
+function TreeNode({ node, level, repoFullName, branchName, onRenameRequest, onDeleteRequest, onApiError, onFileNodeClick }: TreeNodeProps) {
+  const { t } = useTranslation();
   const [isOpen, setIsOpen] = useState(false);
   const [isRenaming, setIsRenaming] = useState(false);
   const [newName, setNewName] = useState(node.name);
@@ -139,7 +245,7 @@ function TreeNode({ node, level, repoFullName, branchName, onRenameRequest, onDe
       setIsRenaming(false);
     } catch (error: any) {
       console.error("Rename failed:", error);
-      onApiError(t('fileTree.renameError', { fileName: node.name, error: error.message })); // Use t()
+      onApiError(t('fileTree.renameError', { fileName: node.name, error: error.message }));
       setIsRenaming(false);
       setNewName(node.name);
     } finally {
@@ -165,15 +271,23 @@ function TreeNode({ node, level, repoFullName, branchName, onRenameRequest, onDe
       setShowDeleteDialog(false);
     } catch (error: any) {
       console.error("Delete failed:", error);
-      onApiError(t('fileTree.deleteError', { fileName: node.name, error: error.message })); // Use t()
+      onApiError(t('fileTree.deleteError', { fileName: node.name, error: error.message }));
       setShowDeleteDialog(false);
     } finally {
       setIsDeleting(false);
     }
   };
 
+  const handleNodeClick = () => {
+      if (node.type === 'file') {
+          onFileNodeClick(node.path);
+      } else {
+          toggle(); // Toggle folder on click
+      }
+  };
+
   const repoUrl = `https://github.com/${repoFullName}.git`;
-  const repoDirName = repoFullName.split('/')[1] || '<仓库目录>'; // Fallback text
+  const repoDirName = repoFullName.split('/')[1] || '<仓库目录>';
 
   return (
     <div>
@@ -200,7 +314,11 @@ function TreeNode({ node, level, repoFullName, branchName, onRenameRequest, onDe
              {isRenamingApiCall && <Loader2 className="h-4 w-4 animate-spin ml-1" />}
           </form>
         ) : (
-          <span className="flex-grow truncate cursor-default" onDoubleClick={handleRenameClick}>
+          <span
+              className="flex-grow truncate cursor-pointer"
+              onClick={handleNodeClick}
+              onDoubleClick={handleRenameClick}
+          >
             {node.name}
           </span>
         )}
@@ -235,6 +353,7 @@ function TreeNode({ node, level, repoFullName, branchName, onRenameRequest, onDe
               onRenameRequest={onRenameRequest}
               onDeleteRequest={onDeleteRequest}
               onApiError={onApiError}
+              onFileNodeClick={onFileNodeClick} // Pass down
             />
           ))}
         </div>
@@ -281,9 +400,9 @@ function TreeNode({ node, level, repoFullName, branchName, onRenameRequest, onDe
                   `${t('fileTree.gitCheckout')}\n` +
                   `git checkout ${branchName}\n\n` +
                   `${t('fileTree.gitMv')}\n` +
-                  `git mv "${node.path}" "${node.path.substring(0, node.path.lastIndexOf('/') + 1)}新名称"\n\n`+ // Keep placeholder for new name
+                  `git mv "${node.path}" "${node.path.substring(0, node.path.lastIndexOf('/') + 1)}新名称"\n\n`+
                   `${t('fileTree.gitCommitRename')}\n` +
-                  `git commit -m "feat: rename folder ${node.name} to 新名称"\n\n` + // Keep placeholder
+                  `git commit -m "feat: rename folder ${node.name} to 新名称"\n\n` +
                   `${t('fileTree.gitPush')}\n` +
                   `git push origin ${branchName}`
                 : `${t('fileTree.gitClone')}\n` +
@@ -317,6 +436,7 @@ interface GithubFileTreeProps {
   pat: string;
   repoFullName: string;
   branchName: string;
+  onFileNodeClick: (filePath: string) => void; // Add prop
 }
 
 export interface GithubFileTreeRef {
@@ -325,7 +445,7 @@ export interface GithubFileTreeRef {
 }
 
 export const GithubFileTree = forwardRef<GithubFileTreeRef, GithubFileTreeProps>(
-  ({ pat, repoFullName, branchName }, ref) => {
+  ({ pat, repoFullName, branchName, onFileNodeClick }, ref) => { // Add prop
     const { t } = useTranslation(); // Initialize hook in the main component too
     const [fileTree, setFileTree] = useState<FileSystemNode[]>([]);
     const [isLoading, setIsLoading] = useState(true);
@@ -445,7 +565,7 @@ export const GithubFileTree = forwardRef<GithubFileTreeRef, GithubFileTreeProps>
           console.error("Rename API call failed:", error);
           throw error;
       }
-    }, [pat, repoFullName, branchName, fileTree, t]); // Add t dependency
+    }, [pat, repoFullName, branchName, fileTree, t]);
 
     const handleDeleteNode = useCallback(async (path: string, type: 'file' | 'directory') => {
       if (type === 'directory') {
@@ -478,7 +598,7 @@ export const GithubFileTree = forwardRef<GithubFileTreeRef, GithubFileTreeProps>
           console.error("Delete API call failed:", error);
           throw error;
       }
-    }, [pat, repoFullName, branchName, t]); // Add t dependency
+    }, [pat, repoFullName, branchName, t]);
 
     return (
       <div className="p-2 border rounded-md bg-background text-sm h-full flex flex-col">
@@ -516,6 +636,7 @@ export const GithubFileTree = forwardRef<GithubFileTreeRef, GithubFileTreeProps>
                 onRenameRequest={handleRenameNode}
                 onDeleteRequest={handleDeleteNode}
                 onApiError={setApiError}
+                onFileNodeClick={onFileNodeClick} // Pass down
               />
             ))}
           </div>

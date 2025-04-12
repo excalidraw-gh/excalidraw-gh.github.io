@@ -7,6 +7,7 @@ interface GithubFileBrowserProps {
   pat: string;
   selectedRepo: string | null;
   selectedBranch: string | null;
+  onFileNodeClick: (filePath: string) => void; // Add prop for file click
 }
 
 // Define the type for the exposed ref methods from this component
@@ -17,7 +18,7 @@ export interface GithubFileBrowserRef {
 
 // Use forwardRef
 export const GithubFileBrowser = forwardRef<GithubFileBrowserRef, GithubFileBrowserProps>(
-  ({ pat, selectedRepo, selectedBranch }, ref) => {
+  ({ pat, selectedRepo, selectedBranch, onFileNodeClick }, ref) => { // Add onFileNodeClick here
     const { t } = useTranslation(); // Initialize hook
     const fileTreeRef = useRef<GithubFileTreeRef>(null);
 
@@ -52,6 +53,7 @@ export const GithubFileBrowser = forwardRef<GithubFileBrowserRef, GithubFileBrow
                 pat={pat}
                 repoFullName={selectedRepo}
                 branchName={selectedBranch}
+                onFileNodeClick={onFileNodeClick} // Pass handler down
             />
           ) : (
             <div className="p-4 text-center text-muted-foreground">
