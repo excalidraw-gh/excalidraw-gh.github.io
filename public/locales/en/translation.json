@@ -14,7 +14,16 @@
     "rightPanelDesc": "This panel takes the remaining space.",
     "loadingPat": "Loading PAT...",
     "loadingErrorTitle": "Loading Error",
-    "operationErrorTitle": "Operation Failed"
+    "operationErrorTitle": "Operation Failed",
+    "fetchReposError": "Failed to fetch repositories: {{status}} {{message}}",
+    "fetchBranchesError": "Failed to fetch branches: {{status}} {{message}}",
+    "fetchFileContentError": "Failed to fetch file content ({{path}}): {{status}} {{message}}",
+    "unknownEncodingError": "Unknown GitHub file encoding: {{encoding}}",
+    "unknownError": "Unknown error",
+    "invalidExcalidrawFormat": "Invalid Excalidraw file format (missing 'elements' or 'appState').",
+    "parseExcalidrawError": "File \"{{filePath}}\" is not a valid Excalidraw JSON format: {{message}}",
+    "loadingFile": "Loading file...",
+    "selectFilePrompt": "Select an .excalidraw file from the tree on the left to start editing."
   },
   "patInput": {
     "title": "GitHub PAT Settings",
@@ -41,6 +50,9 @@
     "empty": "Repository is empty or branch content is empty.",
     "renameAction": "Rename",
     "deleteAction": "Delete",
+    "saveAction": "Save",
+    "versionsAction": "Version History",
+    "loadVersionError": "Failed to load content for version {{sha}} of '{{fileName}}': {{error}}",
     "renameFolderNotImplemented": "(Not Implemented)",
     "deleteFolderNotImplemented": "(Not Implemented)",
     "deleteFileConfirmTitle": "Confirm Deletion",
@@ -72,5 +84,23 @@
     "emptyError": "File path cannot be empty.",
     "formatError": "Invalid file path format.",
     "apiError": "Failed to create file \"{{filePath}}\": {{error}}"
+  },
+  "savePrompt": {
+    "title": "Save Changes?",
+    "description": "The file \"{{fileName}}\" has unsaved changes. Do you want to save them before opening the next file?",
+    "cancelButton": "Cancel",
+    "discardButton": "Discard",
+    "saveButton": "Save",
+    "currentFileFallback": "current file"
+  },
+  "versionHistory": {
+    "title": "Version History for {{fileName}}",
+    "description": "Select a version to view it in Excalidraw.",
+    "loading": "Loading history...",
+    "loadError": "Failed to load version history.",
+    "noHistory": "No version history found for this file.",
+    "unknownAuthor": "Unknown Author",
+    "viewOnGithub": "View commit on GitHub",
+    "openButton": "Open"
   }
 }

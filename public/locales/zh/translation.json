@@ -14,7 +14,16 @@
     "rightPanelDesc": "此面板占据剩余空间。",
     "loadingPat": "正在加载 PAT...",
     "loadingErrorTitle": "加载错误",
-    "operationErrorTitle": "操作失败"
+    "operationErrorTitle": "操作失败",
+    "fetchReposError": "获取仓库失败: {{status}} {{message}}",
+    "fetchBranchesError": "获取分支失败: {{status}} {{message}}",
+    "fetchFileContentError": "获取文件内容失败 ({{path}}): {{status}} {{message}}",
+    "unknownEncodingError": "未知的 GitHub 文件编码: {{encoding}}",
+    "unknownError": "未知错误",
+    "invalidExcalidrawFormat": "无效的 Excalidraw 文件格式 (缺少 'elements' 或 'appState')。",
+    "parseExcalidrawError": "文件 \"{{filePath}}\" 不是有效的 Excalidraw JSON 格式: {{message}}",
+    "loadingFile": "正在加载文件...",
+    "selectFilePrompt": "在左侧文件树中选择一个 .excalidraw 文件以开始编辑。"
   },
   "patInput": {
     "title": "GitHub PAT 设置",
@@ -41,6 +50,9 @@
     "empty": "仓库为空或分支内容为空。",
     "renameAction": "重命名",
     "deleteAction": "删除",
+    "saveAction": "保存",
+    "versionsAction": "版本历史",
+    "loadVersionError": "加载文件 '{{fileName}}' 的版本 {{sha}} 内容失败: {{error}}",
     "renameFolderNotImplemented": "(未实现)",
     "deleteFolderNotImplemented": "(未实现)",
     "deleteFileConfirmTitle": "确认删除",
@@ -72,5 +84,36 @@
     "emptyError": "文件路径不能为空。",
     "formatError": "无效的文件路径格式。",
     "apiError": "创建文件 \"{{filePath}}\" 失败: {{error}}"
+  },
+  "savePrompt": {
+    "title": "保存更改？",
+    "description": "文件 \"{{fileName}}\" 有未保存的更改。您想在打开下一个文件之前保存它们吗？",
+    "cancelButton": "取消",
+    "discardButton": "放弃",
+    "saveButton": "保存",
+    "currentFileFallback": "当前文件"
+  },
+  "versionHistory": {
+    "title": "{{fileName}} 的版本历史",
+    "description": "选择一个版本以在 Excalidraw 中查看。",
+    "loading": "正在加载历史记录...",
+    "loadError": "加载版本历史失败。",
+    "noHistory": "未找到该文件的版本历史。",
+    "unknownAuthor": "未知作者",
+    "viewOnGithub": "在 GitHub 上查看提交",
+    "openButton": "打开"
+  },
+  "saveDialog": {
+    "title": "保存文件",
+    "description": "为保存 \"{{fileName}}\" 输入提交信息。",
+    "commitMessageLabel": "提交信息",
+    "commitMessagePlaceholder": "例如：更新图表，包含新的流程",
+    "cancelButton": "取消",
+    "saveButton": "保存",
+    "savingButton": "正在保存...",
+    "missingInfoError": "缺少必要信息（PAT、仓库、分支、路径或提交信息）。",
+    "getContentError": "无法从编辑器获取最新内容。",
+    "unknownApiError": "保存过程中发生未知错误。",
+    "errorTitle": "保存失败"
   }
 }

@@ -35,6 +35,7 @@ export const ExcalidrawWrapper = React.forwardRef<ExcalidrawWrapperRef, Excalidr
     const excalidrawRefCallback = useCallback((api: any | null) => { // Use any for api type
         if (api) {
             setExcalidrawAPI(api);
+            console.log('[DEBUG] Excalidraw API object:', api); // Log API object
         }
     }, []);
 
@@ -113,7 +114,8 @@ export const ExcalidrawWrapper = React.forwardRef<ExcalidrawWrapperRef, Excalidr
         debouncedCompareAndNotify(elements, appState, files);
     };
 
-
+    // Log the props being passed down to the actual Excalidraw component
+    console.log('[DEBUG] Props passed to Excalidraw component:', { initialData, onChange: handleRawExcalidrawChange, langCode: i18n.language.startsWith('zh') ? 'zh-CN' : 'en' });
     return (
       <div style={{ height: "100%", width: "100%" }}>
         <Excalidraw

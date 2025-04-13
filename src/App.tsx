@@ -42,19 +42,19 @@ interface Repo { id: number; name: string; full_name: string; private: boolean; 
 interface Branch { name: string; commit: { sha: string; url: string; }; protected: boolean; }
 const GITHUB_API_BASE = "https://api.github.com";
 
-async function fetchUserRepos(pat: string): Promise<Repo[]> {
+async function fetchUserRepos(t: Function, pat: string): Promise<Repo[]> { // Add t parameter
     const response = await fetch(`${GITHUB_API_BASE}/user/repos?sort=updated&per_page=100`, { headers: { Authorization: `token ${pat}`, Accept: "application/vnd.github.v3+json" } });
-    if (!response.ok) { const errorData = await response.json().catch(() => ({})); throw new Error(`获取仓库失败: ${response.status} ${errorData.message || ''}`); }
+    if (!response.ok) { const errorData = await response.json().catch(() => ({})); throw new Error(t('app.fetchReposError', { status: response.status, message: errorData.message || '' }) as string); } // Add type assertion
     return response.json();
 }
-async function fetchRepoBranches(pat: string, repoFullName: string): Promise<Branch[]> {
+async function fetchRepoBranches(t: Function, pat: string, repoFullName: string): Promise<Branch[]> { // Add t parameter
     const response = await fetch(`${GITHUB_API_BASE}/repos/${repoFullName}/branches`, { headers: { Authorization: `token ${pat}`, Accept: "application/vnd.github.v3+json" } });
-    if (!response.ok) { const errorData = await response.json().catch(() => ({})); throw new Error(`获取分支失败: ${response.status} ${errorData.message || ''}`); }
+    if (!response.ok) { const errorData = await response.json().catch(() => ({})); throw new Error(t('app.fetchBranchesError', { status: response.status, message: errorData.message || '' }) as string); } // Add type assertion
     return response.json();
 }
 
 // Helper to get file content
-async function getGithubFileContent(pat: string, repoFullName: string, path: string, branch: string): Promise<string> {
+async function getGithubFileContent(t: Function, pat: string, repoFullName: string, path: string, branch: string): Promise<string> { // Add t parameter
     const url = `${GITHUB_API_BASE}/repos/${repoFullName}/contents/${path}?ref=${branch}`;
     const response = await fetch(url, {
         headers: {
@@ -64,11 +64,11 @@ async function getGithubFileContent(pat: string, repoFullName: string, path: str
     });
     if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        throw new Error(`获取文件内容失败 (${path}): ${response.status} ${errorData.message || ''}`);
+        throw new Error(t('app.fetchFileContentError', { path: path, status: response.status, message: errorData.message || '' }) as string); // Add type assertion
     }
     const data = await response.json();
     if (data.encoding !== 'base64') {
-        throw new Error(`未知的 GitHub 文件编码: ${data.encoding}`);
+        throw new Error(t('app.unknownEncodingError', { encoding: data.encoding }) as string); // Add type assertion
     }
     // Decode base64 content
     const decodedContent = decodeURIComponent(escape(atob(data.content)));
@@ -99,7 +99,8 @@ function App() {
   const [openedFileContent, setOpenedFileContent] = useState<any | null>(null); // Using any for now
   const [isFileLoading, setIsFileLoading] = useState(false);
   const [fileLoadingError, setFileLoadingError] = useState<string | null>(null);
-  const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null); // 新增：状态来存储选中的文件路径
+  const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null); // Store the path selected in the tree
+  const [openedCommitSha, setOpenedCommitSha] = useState<string | null>(null); // Store the SHA if a specific version is opened
 
   const browserRef = useRef<GithubFileBrowserRef>(null);
   const excalidrawWrapperRef = useRef<ExcalidrawWrapperRef>(null); // Ref for ExcalidrawWrapper
@@ -144,7 +145,7 @@ function App() {
             }
 
             try {
-                const fetchedRepos = await fetchUserRepos(currentPat);
+                const fetchedRepos = await fetchUserRepos(t, currentPat); // Pass t
                 setRepos(fetchedRepos);
 
                 let repoToSelect: string | null = null;
@@ -179,7 +180,7 @@ function App() {
         async function loadBranches() {
             if (!currentPat || !selectedRepo) return;
             setIsLoadingBranches(true); setRepoBranchError(null); setSelectedBranch(null); setBranches([]);
-            try { const fetchedBranches = await fetchRepoBranches(currentPat, selectedRepo); setBranches(fetchedBranches); if (fetchedBranches.length > 0) { const main = fetchedBranches.find(b => b.name === 'main'); const master = fetchedBranches.find(b => b.name === 'master'); if (main) setSelectedBranch(main.name); else if (master) setSelectedBranch(master.name); else setSelectedBranch(fetchedBranches[0].name); } else { setSelectedBranch(null); } }
+            try { const fetchedBranches = await fetchRepoBranches(t, currentPat, selectedRepo); setBranches(fetchedBranches); if (fetchedBranches.length > 0) { const main = fetchedBranches.find(b => b.name === 'main'); const master = fetchedBranches.find(b => b.name === 'master'); if (main) setSelectedBranch(main.name); else if (master) setSelectedBranch(master.name); else setSelectedBranch(fetchedBranches[0].name); } else { setSelectedBranch(null); } } // Pass t
             catch (err: any) { setRepoBranchError(err.message || t('app.loadingErrorTitle')); }
             finally { setIsLoadingBranches(false); }
         }
@@ -220,7 +221,7 @@ function App() {
             console.log(`[DEBUG] App: File created, setting state to open: ${finalPath}`);
             setFileToOpenAfterCreate(finalPath); // Trigger useEffect to open the file
         } catch (error: any) {
-            setCreateFileError(error.message || t('createFileDialog.apiError', { filePath: trimmedPath, error: 'Unknown error' }));
+            setCreateFileError(error.message || t('createFileDialog.apiError', { filePath: trimmedPath, error: t('app.unknownError') }));
         } finally {
             setIsCreatingFile(false); // Correctly placed finally block
         }
@@ -228,85 +229,137 @@ function App() {
 
   // --- Effect to open file after creation ---
   useEffect(() => {
-      if (fileToOpenAfterCreate) {
+      if (fileToOpenAfterCreate && !isFileLoading) { // Ensure not already loading
           console.log(`[DEBUG] App: useEffect triggered to open file: ${fileToOpenAfterCreate}`);
+          // Call handleFileNodeClick to load the newly created file (latest version)
           handleFileNodeClick(fileToOpenAfterCreate);
           setFileToOpenAfterCreate(null); // Reset the trigger state
       }
-  }, [fileToOpenAfterCreate]); // Dependency on the trigger state
+  }, [fileToOpenAfterCreate, isFileLoading]); // Add isFileLoading dependency
 
   // --- Handler for file node click ---
-  // Function to actually load the file content
-  const loadFileContent = async (filePathToLoad: string) => {
+  // Function to load the *latest* file content from GitHub
+  const loadLatestFileContent = async (filePathToLoad: string) => {
       if (!currentPat || !selectedRepo || !selectedBranch) return;
 
-      console.log("Opening Excalidraw file:", filePathToLoad);
+      console.log("Opening latest Excalidraw file:", filePathToLoad);
       setIsFileLoading(true);
       setFileLoadingError(null);
-      setSelectedFilePath(filePathToLoad); // Highlight the selected file
+      setSelectedFilePath(filePathToLoad); // Highlight the selected file in the tree
       setOpenedFilePath(filePathToLoad);   // Mark it as the currently opened file
+      setOpenedCommitSha(null);            // Explicitly mark as latest version
       setOpenedFileContent(null);        // Clear previous content while loading
 
       try {
-          const rawContent = await getGithubFileContent(currentPat, selectedRepo, filePathToLoad, selectedBranch);
-          try {
-              const parsedData = JSON.parse(rawContent);
-              if (parsedData && Array.isArray(parsedData.elements)) {
-                  setOpenedFileContent({
-                      elements: parsedData.elements,
-                      appState: parsedData.appState
-                  });
-                  // Successfully loaded, ensure it's not marked as modified initially
-                  setModifiedFiles(prev => {
-                      const newSet = new Set(prev);
-                      newSet.delete(filePathToLoad);
-                      return newSet;
-                  });
-              } else {
-                  throw new Error("Invalid Excalidraw file format (missing 'elements' array).");
-              }
-          } catch (parseError: any) {
-              console.error("Failed to parse Excalidraw content:", parseError);
-              throw new Error(`文件 "${filePathToLoad}" 不是有效的 Excalidraw JSON 格式: ${parseError.message}`);
-          }
+          const rawContent = await getGithubFileContent(t, currentPat, selectedRepo, filePathToLoad, selectedBranch); // Pass t
+          // Proceed to parse and set content (common logic)
+          parseAndSetExcalidrawContent(rawContent, filePathToLoad);
       } catch (error: any) {
-          console.error("Failed to load file content:", error);
+          console.error("Failed to load latest file content:", error);
           setFileLoadingError(error.message);
           setOpenedFilePath(null); // Clear opened file path on error
           setOpenedFileContent(null);
+          setOpenedCommitSha(null);
           // Keep selectedFilePath so user knows which file failed
       } finally {
           setIsFileLoading(false);
       }
   };
 
-  // --- Handler for file node click ---
-  const handleFileNodeClick = (filePath: string) => {
-      // Prevent action if already loading or same file clicked
-      if (isFileLoading || filePath === openedFilePath) {
+  // Helper function to parse and set Excalidraw content (used by both latest and version loading)
+  const parseAndSetExcalidrawContent = (rawContent: string, filePath: string) => {
+      try {
+          const parsedData = JSON.parse(rawContent);
+          if (parsedData && (Array.isArray(parsedData.elements) || typeof parsedData.elements === 'object')) { // Allow empty object for elements initially
+              setOpenedFileContent({
+                  elements: Array.isArray(parsedData.elements) ? parsedData.elements : [], // Ensure elements is an array
+                  appState: parsedData.appState
+              });
+              // Successfully loaded, ensure it's not marked as modified initially
+              setModifiedFiles(prev => {
+                  const newSet = new Set(prev);
+                  newSet.delete(filePath); // Use the actual file path for modification tracking
+                  return newSet;
+              });
+          } else {
+              // Allow empty files or files without elements initially
+              if (parsedData && typeof parsedData.elements === 'undefined' && typeof parsedData.appState !== 'undefined') {
+                  setOpenedFileContent({ elements: [], appState: parsedData.appState });
+                   setModifiedFiles(prev => {
+                      const newSet = new Set(prev);
+                      newSet.delete(filePath);
+                      return newSet;
+                  });
+              } else {
+                console.warn("Parsed data structure might be invalid:", parsedData);
+                throw new Error(t('app.invalidExcalidrawFormat'));
+              }
+          }
+      } catch (parseError: any) {
+          console.error("Failed to parse Excalidraw content:", parseError);
+          throw new Error(t('app.parseExcalidrawError', { filePath: filePath, message: parseError.message }));
+      }
+  };
+
+  // --- Handler for file node click (handles both latest and specific versions) ---
+  const handleFileNodeClick = (filePath: string, content?: string, commitSha?: string) => {
+      console.log(`handleFileNodeClick: path=${filePath}, sha=${commitSha ?? 'latest'}, hasContent=${!!content}`);
+
+      // Prevent action if already loading
+      if (isFileLoading) {
+          console.log("Ignoring click, file is loading.");
+          return;
+      }
+
+      // Prevent action if the exact same file path and version is already open
+      if (filePath === openedFilePath && commitSha === openedCommitSha) {
+           console.log("Ignoring click, same file and version already open.");
           return;
       }
 
       // Handle non-excalidraw files (just select, don't open/prompt)
       if (!filePath.toLowerCase().endsWith('.excalidraw')) {
           console.log("Clicked non-excalidraw file:", filePath);
-          setSelectedFilePath(filePath);
-          // Optionally clear the editor if a non-excalidraw file is selected
+          setSelectedFilePath(filePath); // Select in tree
+          // Decide if you want to clear the editor or keep the previous file visible
           // setOpenedFilePath(null);
           // setOpenedFileContent(null);
+          // setOpenedCommitSha(null);
           return;
       }
 
-      // Check if the CURRENTLY opened file has unsaved changes
+      // --- Check for modifications in the *currently* open file ---
       if (openedFilePath && modifiedFiles.has(openedFilePath)) {
-          console.log(`Current file ${openedFilePath} has modifications. Prompting user.`);
-          setNextFilePathToOpen(filePath); // Store the file user wants to open
-          setShowSaveDialog(true);       // Show the save prompt dialog
+          console.log(`Current file ${openedFilePath} ${openedCommitSha ? `(SHA: ${openedCommitSha.substring(0,7)})` : '(latest)'} has modifications. Prompting user.`);
+          // Store the details of the file the user wants to open *next*
+          setNextFilePathToOpen(JSON.stringify({ filePath, content, commitSha })); // Store all info needed
+          setShowSaveDialog(true); // Show the save prompt dialog for the *current* file
       } else {
-          // No modifications or no file currently open, proceed to load the new file
-          loadFileContent(filePath);
+          // No modifications or no file currently open, proceed to load the clicked file/version
+          if (commitSha && content) {
+              // Load specific version using provided content
+              console.log(`Loading specific version ${commitSha.substring(0,7)} for ${filePath}`);
+              setIsFileLoading(true); // Set loading state briefly for UI feedback
+              setFileLoadingError(null);
+              setSelectedFilePath(filePath); // Select in tree
+              setOpenedFilePath(filePath);   // Set opened file path
+              setOpenedCommitSha(commitSha); // Set opened commit SHA
+              try {
+                  parseAndSetExcalidrawContent(content, filePath);
+              } catch (error: any) {
+                  console.error("Failed to parse provided file content:", error);
+                  setFileLoadingError(error.message);
+                  setOpenedFilePath(null);
+                  setOpenedFileContent(null);
+                  setOpenedCommitSha(null);
+              } finally {
+                  setIsFileLoading(false);
+              }
+          } else {
+              // Load the latest version using API call
+              loadLatestFileContent(filePath);
+          }
       }
-
   };
 
   // --- Handler to trigger the commit dialog ---
@@ -340,9 +393,13 @@ function App() {
               return newSet;
           });
       }
-      // Proceed to load the next file
+      // Proceed to load the next file/version
       if (nextFilePathToOpen) {
-          loadFileContent(nextFilePathToOpen);
+          try {
+              const { filePath: nextPath, content: nextContent, commitSha: nextSha } = JSON.parse(nextFilePathToOpen);
+              // Call handleFileNodeClick again, but this time it won't prompt because modifications are discarded
+              handleFileNodeClick(nextPath, nextContent, nextSha);
+          } catch (e) { console.error("Failed to parse next file data on discard:", e); }
       }
       setNextFilePathToOpen(null);
   };
@@ -378,10 +435,14 @@ function App() {
       console.log("[DEBUG] App: Refreshing file tree after successful save.");
       browserRef.current?.refreshTree(); // Ensure this line is active
 
-      // If save was triggered by switching files, load the next file now
+      // If save was triggered by switching files, load the next file/version now
       if (nextFilePathToOpen) {
-          console.log(`[DEBUG] App: Loading next file after save: ${nextFilePathToOpen}`);
-          loadFileContent(nextFilePathToOpen);
+           console.log(`[DEBUG] App: Loading next file/version after save: ${nextFilePathToOpen}`);
+           try {
+              const { filePath: nextPath, content: nextContent, commitSha: nextSha } = JSON.parse(nextFilePathToOpen);
+              // Call handleFileNodeClick again, it won't prompt now
+              handleFileNodeClick(nextPath, nextContent, nextSha);
+          } catch (e) { console.error("Failed to parse next file data after save:", e); }
           setNextFilePathToOpen(null);
       }
   };
@@ -422,33 +483,33 @@ function App() {
       _elements: readonly any[],
       _appState: any,
       _files: any,
-      isModified: boolean
+      isModified: boolean // This indicates if content differs from the *initial* state loaded into Excalidraw
   ) => {
-      console.log(`[DEBUG] App: handleExcalidrawChange called for ${openedFilePath} with isModified: ${isModified}`);
+      // Modification status is tracked against the openedFilePath (without SHA)
+      // because saving always updates the latest version.
+      console.log(`[DEBUG] App: handleExcalidrawChange called for ${openedFilePath} (version: ${openedCommitSha ?? 'latest'}) with isModified: ${isModified}`);
       if (openedFilePath) {
           setModifiedFiles(prev => {
               const newSet = new Set(prev);
-              const currentlyMarked = newSet.has(openedFilePath);
+              const currentlyMarked = newSet.has(openedFilePath); // Check based on path only
+
               if (isModified) {
                   if (!currentlyMarked) {
                       console.log(`[DEBUG] App: Marking file as modified: ${openedFilePath}`);
                       newSet.add(openedFilePath);
+                      return newSet; // Return new set
                   }
               } else {
                   if (currentlyMarked) {
                       console.log(`[DEBUG] App: Marking file as unmodified: ${openedFilePath}`);
-                      console.log(`File marked as unmodified: ${openedFilePath}`);
                       newSet.delete(openedFilePath);
+                      return newSet; // Return new set
                   }
               }
-              // Only return a new Set object if it actually changed to avoid unnecessary re-renders
-              if ((isModified && !currentlyMarked) || (!isModified && currentlyMarked)) {
-                  return newSet;
-              }
-              return prev; // Return previous state if no change
+              return prev; // Return previous state if no change in modification status
           });
       }
-  }, [openedFilePath]); // Dependency: openedFilePath
+  }, [openedFilePath, openedCommitSha]); // Depend on both path and SHA to re-evaluate if needed, though logic uses path only for the Set key.
 
 
   return (<> {/* Wrap in fragment */}
@@ -571,7 +632,7 @@ function App() {
         {isFileLoading ? (
             <div className="flex-grow flex items-center justify-center text-muted-foreground">
                 <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-                正在加载文件... {/* TODO: Translate */}
+                {t('app.loadingFile')}
             </div>
         ) : fileLoadingError ? (
             <div className="flex-grow flex items-center justify-center p-4">
@@ -582,14 +643,17 @@ function App() {
             </div>
         ) : openedFilePath && openedFileContent ? (
             <ExcalidrawWrapper
-                key={openedFilePath}
+                // Change key when file path OR commit SHA changes to force re-render
+                key={`${openedFilePath}-${openedCommitSha ?? 'latest'}`}
                 ref={excalidrawWrapperRef} // Assign ref
                 initialData={openedFileContent}
                 onChange={handleExcalidrawChange} // Pass the change handler
+                // Optionally pass commit SHA to display in UI (needs ExcalidrawWrapper modification)
+                // loadedCommitSha={openedCommitSha}
             />
         ) : (
             <div className="flex-grow flex items-center justify-center text-muted-foreground">
-                在左侧文件树中选择一个 .excalidraw 文件以开始编辑。 {/* TODO: Translate */}
+                {t('app.selectFilePrompt')}
             </div>
         )}
       </Panel>
@@ -601,7 +665,7 @@ function App() {
         <DialogHeader>
           <DialogTitle>{t('savePrompt.title', 'Save Changes?')}</DialogTitle> {/* Added default text */}
           <DialogDescription>
-            {t('savePrompt.description', 'The file "{{fileName}}" has unsaved changes. Do you want to save them before opening the next file?', { fileName: openedFilePath?.split('/').pop() || 'current file' })} {/* Added default text */}
+            {t('savePrompt.description', 'The file "{{fileName}}" has unsaved changes. Do you want to save them before opening the next file?', { fileName: openedFilePath?.split('/').pop() || t('savePrompt.currentFileFallback') })} {/* Added default text */}
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>

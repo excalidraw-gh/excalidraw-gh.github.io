@@ -1,7 +1,7 @@
 // vite-project/src/components/GithubFileTree.tsx
 import React, { useState, useEffect, useCallback, useRef, forwardRef, useImperativeHandle } from 'react';
 import { useTranslation } from 'react-i18next'; // Import useTranslation
-import { Loader2, File, Folder, ChevronDown, ChevronRight, MoreHorizontal, Edit, Trash2, Save } from 'lucide-react'; // Add Save icon
+import { Loader2, File, Folder, ChevronDown, ChevronRight, MoreHorizontal, Edit, Trash2, Save, History } from 'lucide-react'; // Add History icon
 import { cn } from "@/lib/utils";
 import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -20,7 +20,12 @@ import {
   DialogHeader,
   DialogTitle,
   DialogClose,
+  DialogTrigger, // 需要导入 DialogTrigger
 } from "@/components/ui/dialog";
+import { ScrollArea } from "@/components/ui/scroll-area"; // 用于版本列表滚动
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"; // Import Tooltip
+import { format, formatRelative, parseISO } from 'date-fns'; // Import date-fns functions
+import { enUS, zhCN } from 'date-fns/locale'; // Import locales
 
 // --- Interfaces ---
 interface FileSystemNode {
@@ -29,6 +34,15 @@ interface FileSystemNode {
   path: string;
   sha?: string;
   children?: FileSystemNode[];
+}
+interface CommitInfo {
+  sha: string;
+  commit: {
+    author: { name: string; date: string };
+    committer: { name: string; date: string };
+    message: string;
+  };
+  html_url: string;
 }
 
 // --- GitHub API Base URL ---
@@ -245,6 +259,59 @@ export async function updateGithubFile( // Add export
     const result = await response.json();
     return { sha: result.content.sha }; // Return only the new SHA
 }
+
+// Fetch file commit history
+async function fetchFileCommits(
+  pat: string,
+  repoFullName: string,
+  filePath: string,
+  branchName: string,
+  page: number = 1,
+  perPage: number = 30
+): Promise<CommitInfo[]> {
+  const url = `${GITHUB_API_BASE}/repos/${repoFullName}/commits?path=${encodeURIComponent(filePath)}&sha=${branchName}&page=${page}&per_page=${perPage}`;
+  const response = await fetch(url, {
+    headers: { Authorization: `token ${pat}`, Accept: "application/vnd.github.v3+json" }
+  });
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(`获取文件提交历史失败: ${response.status} ${response.statusText} - ${errorData.message || '未知错误'}`);
+  }
+  return response.json();
+}
+
+// Fetch file content at a specific commit
+async function fetchFileContentAtCommit(
+    pat: string,
+    repoFullName: string,
+    filePath: string,
+    commitSha: string
+): Promise<string> {
+    const url = `${GITHUB_API_BASE}/repos/${repoFullName}/contents/${filePath}?ref=${commitSha}`;
+    const response = await fetch(url, {
+        headers: {
+            Authorization: `token ${pat}`,
+            // Request raw content directly
+            Accept: "application/vnd.github.raw",
+        }
+    });
+    if (!response.ok) {
+        // Try fetching as JSON to get error message if raw fails
+        const fallbackResponse = await fetch(url, {
+             headers: {
+                Authorization: `token ${pat}`,
+                Accept: "application/vnd.github.v3+json",
+            }
+        });
+        const errorData = await fallbackResponse.json().catch(() => ({}));
+        throw new Error(`获取文件内容失败 (SHA: ${commitSha}): ${response.status} ${response.statusText} - ${errorData.message || '未知错误'}`);
+    }
+    // Content is expected to be plain text (JSON for Excalidraw)
+    const content = await response.text();
+    return content;
+}
+
+
 // --- End Helper Functions ---
 
 
@@ -252,6 +319,7 @@ export async function updateGithubFile( // Add export
 interface TreeNodeProps {
   node: FileSystemNode;
   level: number;
+  pat: string; // 需要 PAT 来获取版本历史
   repoFullName: string;
   branchName: string;
   selectedFilePath: string | null;
@@ -264,11 +332,11 @@ interface TreeNodeProps {
   onSaveRequest: (filePath: string) => void;
   onToggleExpand: (path: string) => void;
   onApiError: (message: string) => void;
-  onFileNodeClick: (filePath: string) => void;
+  onFileNodeClick: (filePath: string, content?: string, commitSha?: string) => void; // 修改签名以接受内容和 SHA
 }
 
 function TreeNode({
-  node, level, repoFullName, branchName, selectedFilePath, isModified, modifiedFiles, isExpanded, expandedPaths, // Add expandedPaths
+  node, level, pat, repoFullName, branchName, selectedFilePath, isModified, modifiedFiles, isExpanded, expandedPaths,
   onRenameRequest, onDeleteRequest, onSaveRequest, onToggleExpand, onApiError, onFileNodeClick
 }: TreeNodeProps) {
   const { t } = useTranslation();
@@ -282,10 +350,10 @@ function TreeNode({
   const renameInputRef = useRef<HTMLInputElement>(null);
   const [showFolderInstructionDialog, setShowFolderInstructionDialog] = useState(false);
   const [folderInstructionType, setFolderInstructionType] = useState<'rename' | 'delete' | null>(null);
+  const [showVersionDialog, setShowVersionDialog] = useState(false); // State for version dialog
 
   const hasChildren = node.children && node.children.length > 0;
 
-  // Use the callback prop to toggle expansion state in the parent
   const toggle = useCallback(() => {
     if (node.type === 'directory' && hasChildren) {
         onToggleExpand(node.path);
@@ -351,12 +419,38 @@ function TreeNode({
   };
 
   const handleNodeClick = () => {
+      const isExcalidraw = node.type === 'file' && node.path.endsWith('.excalidraw');
+      console.log(`[Debug] handleNodeClick: path=${node.path}, isExcalidraw=${isExcalidraw}`); // 添加日志
       if (node.type === 'file') {
-          onFileNodeClick(node.path);
+          // 稍后会在这里添加判断
+          onFileNodeClick(node.path); // 点击文件节点，加载最新版本
       } else {
           toggle(); // Toggle folder on click
       }
   };
+
+  const handleShowVersionsClick = () => {
+      if (node.type === 'file') {
+          setShowVersionDialog(true);
+      }
+  };
+
+  // Callback when a version is selected in the dialog
+  const handleVersionSelect = async (commitSha: string) => {
+      console.log(`Version selected: ${commitSha} for file ${node.path}`);
+      setShowVersionDialog(false);
+      onApiError(""); // Clear previous errors
+      try {
+          // Fetch content of the selected version
+          const fileContent = await fetchFileContentAtCommit(pat, repoFullName, node.path, commitSha);
+          // Pass the content and commit SHA to the parent to load in Excalidraw
+          onFileNodeClick(node.path, fileContent, commitSha);
+      } catch (error: any) {
+          console.error("Failed to load file version:", error);
+          onApiError(t('fileTree.loadVersionError', { fileName: node.name, sha: commitSha.substring(0, 7), error: error.message }));
+      }
+  };
+
 
   const repoUrl = `https://github.com/${repoFullName}.git`;
   const repoDirName = repoFullName.split('/')[1] || '<仓库目录>';
@@ -367,7 +461,7 @@ function TreeNode({
         className={cn(
           "flex items-center space-x-1 py-1.5 px-2 rounded-md hover:bg-secondary hover:text-secondary-foreground",
           isRenaming ? "bg-secondary" : "",
-          node.type === 'file' && node.path === selectedFilePath ? "bg-primary/10 text-primary" : "" // 新增：高亮选中的文件
+          node.type === 'file' && node.path === selectedFilePath ? "bg-primary/10 text-primary" : ""
         )}
         style={{ paddingLeft: `${level * 16 + 8}px` }}
         onMouseEnter={() => setHovered(true)}
@@ -380,7 +474,11 @@ function TreeNode({
             <div className="w-4 h-4 shrink-0" /> // Keep placeholder for alignment
           )}
         </span>
-        {node.type === 'directory' ? <Folder className="h-4 w-4 shrink-0 text-sky-500" /> : <File className="h-4 w-4 shrink-0 text-gray-500" />}
+        {node.type === 'directory' ? <Folder className="h-4 w-4 shrink-0 text-sky-500" /> : (() => {
+            const isExcalidraw = node.path.endsWith('.excalidraw');
+            console.log(`[Debug] TreeNode render: path=${node.path}, isExcalidraw=${isExcalidraw}`); // 添加日志
+            return <File className="h-4 w-4 shrink-0 text-gray-500" />; // 稍后会在这里添加条件样式
+        })()}
         {isRenaming ? (
           <form onSubmit={handleRenameSubmit} className="flex-grow">
             <Input ref={renameInputRef} value={newName} onChange={(e) => setNewName(e.target.value)} onBlur={() => handleRenameSubmit()} className="h-6 px-1 text-sm" disabled={isRenamingApiCall} autoFocus />
@@ -409,14 +507,20 @@ function TreeNode({
                   {t('fileTree.saveAction', 'Save')} {/* Add translation key */}
                 </DropdownMenuItem>
               )}
-              <DropdownMenuItem onClick={handleRenameClick}>
-                <Edit className="mr-2 h-4 w-4" />
-                {t('fileTree.renameAction')}
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={handleDeleteClick} className={cn(node.type === 'directory' ? "" : "text-red-600 focus:text-red-600 focus:bg-red-50")}>
-                <Trash2 className="mr-2 h-4 w-4" />
-                 {t('fileTree.deleteAction')}
-              </DropdownMenuItem>
+               {node.type === 'file' && ( // Only show for files
+                 <DropdownMenuItem onClick={handleShowVersionsClick}>
+                   <History className="mr-2 h-4 w-4" />
+                   {t('fileTree.versionsAction', '版本历史')}
+                 </DropdownMenuItem>
+               )}
+             <DropdownMenuItem onClick={handleRenameClick}>
+               <Edit className="mr-2 h-4 w-4" />
+               {t('fileTree.renameAction')}
+             </DropdownMenuItem>
+             <DropdownMenuItem onClick={handleDeleteClick} className={cn(node.type === 'directory' ? "" : "text-red-600 focus:text-red-600 focus:bg-red-50")}>
+               <Trash2 className="mr-2 h-4 w-4" />
+                {t('fileTree.deleteAction')}
+             </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
         )}
@@ -429,24 +533,26 @@ function TreeNode({
               key={child.path}
               node={child}
               level={level + 1}
+              pat={pat} // Pass PAT down
               repoFullName={repoFullName}
               branchName={branchName}
               selectedFilePath={selectedFilePath}
               isModified={modifiedFiles.has(child.path)}
-              modifiedFiles={modifiedFiles} // Pass down modifiedFiles set
-              isExpanded={expandedPaths.has(child.path)} // Check against the passed down set
-              expandedPaths={expandedPaths} // Pass the full set down
+              modifiedFiles={modifiedFiles}
+              isExpanded={expandedPaths.has(child.path)}
+              expandedPaths={expandedPaths}
               onRenameRequest={onRenameRequest}
               onDeleteRequest={onDeleteRequest}
               onSaveRequest={onSaveRequest}
               onToggleExpand={onToggleExpand}
               onApiError={onApiError}
-              onFileNodeClick={onFileNodeClick}
+              onFileNodeClick={onFileNodeClick} // Pass down the modified handler
             />
           ))}
         </div>
       )}
 
+       {/* Delete File Dialog */}
        <Dialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
          <DialogContent>
           <DialogHeader>
@@ -467,6 +573,7 @@ function TreeNode({
         </DialogContent>
       </Dialog>
 
+      {/* Folder Instruction Dialog */}
       <Dialog open={showFolderInstructionDialog} onOpenChange={setShowFolderInstructionDialog}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
@@ -514,20 +621,233 @@ function TreeNode({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Version History Dialog */}
+      {node.type === 'file' && (
+          <VersionHistoryDialog
+              isOpen={showVersionDialog}
+              onOpenChange={setShowVersionDialog}
+              pat={pat}
+              repoFullName={repoFullName}
+              branchName={branchName}
+              filePath={node.path}
+              fileName={node.name}
+              onVersionSelect={handleVersionSelect}
+              onApiError={onApiError} // Pass error handler
+          />
+      )}
     </div>
   );
 }
 
 
+// --- VersionHistoryDialog Component ---
+interface VersionHistoryDialogProps {
+   isOpen: boolean;
+   onOpenChange: (isOpen: boolean) => void;
+   pat: string;
+   repoFullName: string;
+   branchName: string;
+   filePath: string;
+   fileName: string;
+   onVersionSelect: (commitSha: string) => void;
+   onApiError: (message: string) => void;
+}
+
+function VersionHistoryDialog({
+   isOpen, onOpenChange, pat, repoFullName, branchName, filePath, fileName, onVersionSelect, onApiError
+}: VersionHistoryDialogProps) {
+   const { t } = useTranslation();
+   const [commits, setCommits] = useState<CommitInfo[]>([]);
+   const [isLoading, setIsLoading] = useState(false);
+   const [error, setError] = useState<string | null>(null);
+   const [loadingVersionSha, setLoadingVersionSha] = useState<string | null>(null); // Track which version is loading
+   const [hoveredSha, setHoveredSha] = useState<string | null>(null); // Track hovered item
+   const { i18n } = useTranslation(); // Get i18n instance for language
+
+   const loadCommits = useCallback(async () => {
+       if (!isOpen || !pat || !repoFullName || !branchName || !filePath) return;
+       setIsLoading(true);
+       setError(null);
+       onApiError(""); // Clear parent error
+       try {
+           const fetchedCommits = await fetchFileCommits(pat, repoFullName, filePath, branchName);
+           setCommits(fetchedCommits);
+       } catch (err: any) {
+           console.error("Failed to fetch commits:", err);
+           setError(err.message || t('versionHistory.loadError'));
+           setCommits([]);
+       } finally {
+           setIsLoading(false);
+       }
+   }, [isOpen, pat, repoFullName, branchName, filePath, t, onApiError]);
+
+   useEffect(() => {
+       // Load commits when the dialog opens
+       if (isOpen) {
+           loadCommits();
+       } else {
+           // Reset state when dialog closes
+           setCommits([]);
+           setError(null);
+           setIsLoading(false);
+           setLoadingVersionSha(null);
+       }
+   }, [isOpen, loadCommits]);
+
+   const handleSelect = async (commitSha: string) => {
+       setLoadingVersionSha(commitSha); // Set loading state for this specific version
+       setError(null); // Clear local error
+       try {
+           await onVersionSelect(commitSha); // Call parent handler (which fetches content)
+       } catch (e) {
+           // Error handled by the parent via onApiError in handleVersionSelect
+       } finally {
+          // Don't close dialog here, parent might show error
+          setLoadingVersionSha(null); // Reset loading state regardless of success/fail
+       }
+   };
+
+   // Get the appropriate locale for date-fns
+   const getDateLocale = () => {
+       const lang = i18n.language;
+       if (lang.startsWith('zh')) return zhCN;
+       // Add more locales as needed
+       return enUS; // Default to English
+   };
+
+   const formatRelativeDate = (dateString: string) => {
+       try {
+           const date = parseISO(dateString);
+           const locale = getDateLocale();
+           // formatRelative provides strings like "yesterday", "last Sunday", etc.
+           return formatRelative(date, new Date(), { locale });
+       } catch (e) {
+           console.error("Error formatting relative date:", e);
+           return dateString; // Fallback
+       }
+   };
+
+   const formatAbsoluteDate = (dateString: string) => {
+       try {
+           const date = parseISO(dateString);
+           const locale = getDateLocale();
+           // format provides a more standard absolute date format
+           return format(date, 'Pp', { locale }); // 'Pp' is like '09/04/2021, 5:00:00 PM'
+       } catch (e) {
+           console.error("Error formatting absolute date:", e);
+           return dateString; // Fallback
+       }
+   };
+
+   return (
+       <Dialog open={isOpen} onOpenChange={onOpenChange}>
+           <DialogContent className="sm:max-w-[600px]">
+               <DialogHeader>
+                   <DialogTitle>{t('versionHistory.title', { fileName: fileName })}</DialogTitle>
+                   <DialogDescription>
+                       {t('versionHistory.description', '选择一个版本以在 Excalidraw 中查看。')}
+                   </DialogDescription>
+               </DialogHeader>
+               <div className="mt-4">
+                   {isLoading && (
+                       <div className="flex items-center justify-center p-8 text-muted-foreground">
+                           <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+                           {t('versionHistory.loading')}
+                       </div>
+                   )}
+                   {error && (
+                       <Alert variant="destructive" className="mb-4">
+                           <AlertTitle>{t('app.operationErrorTitle')}</AlertTitle>
+                           <AlertDescription>{error}</AlertDescription>
+                       </Alert>
+                   )}
+                   {!isLoading && !error && commits.length === 0 && (
+                        <div className="text-center p-8 text-muted-foreground">
+                           {t('versionHistory.noHistory')}
+                        </div>
+                   )}
+                   {!isLoading && !error && commits.length > 0 && (
+                       <TooltipProvider delayDuration={300}>
+                           <ScrollArea className="h-[400px] border rounded-md">
+                               <div className="p-1">
+                                   {commits.map((commit) => (
+                                       <div
+                                           key={commit.sha}
+                                           className={cn(
+                                               "flex items-center justify-between p-2 mb-1 rounded-md hover:bg-secondary",
+                                               loadingVersionSha === commit.sha && "opacity-50" // Dim while loading this version
+                                           )}
+                                           onMouseEnter={() => setHoveredSha(commit.sha)}
+                                           onMouseLeave={() => setHoveredSha(null)}
+                                       >
+                                           <div className="flex-grow mr-4 overflow-hidden">
+                                               <p className="text-sm font-medium truncate" title={commit.commit.message}>
+                                                   {commit.commit.message.split('\n')[0]} {/* Show first line */}
+                                               </p>
+                                               <Tooltip>
+                                                   <TooltipTrigger asChild>
+                                                       <p className="text-xs text-muted-foreground truncate cursor-default">
+                                                           {commit.commit.author?.name || commit.commit.committer?.name || t('versionHistory.unknownAuthor')} - {formatRelativeDate(commit.commit.author?.date || commit.commit.committer?.date || '')}
+                                                       </p>
+                                                   </TooltipTrigger>
+                                                   <TooltipContent side="bottom" align="start">
+                                                       <p>{formatAbsoluteDate(commit.commit.author?.date || commit.commit.committer?.date || '')}</p>
+                                                   </TooltipContent>
+                                               </Tooltip>
+                                               <p className="text-xs text-muted-foreground font-mono">{commit.sha.substring(0, 7)}</p>
+                                           </div>
+                                           <div className="flex-shrink-0 w-16 text-right"> {/* Container for button */}
+                                               {loadingVersionSha === commit.sha ? (
+                                                   <Loader2 className="h-4 w-4 animate-spin inline-block" />
+                                               ) : (
+                                                   <Button
+                                                       variant="secondary" // Change variant to secondary
+                                                       size="sm"
+                                                       className={cn(
+                                                           "h-7 px-2 transition-opacity duration-150",
+                                                           hoveredSha === commit.sha ? "opacity-100" : "opacity-0",
+                                                           "focus:opacity-100" // Keep visible if focused
+                                                       )}
+                                                       onClick={(e) => {
+                                                           e.stopPropagation(); // Prevent potential parent clicks if any
+                                                           handleSelect(commit.sha);
+                                                       }}
+                                                       disabled={loadingVersionSha === commit.sha}
+                                                   >
+                                                       {t('versionHistory.openButton', 'Open')}
+                                                   </Button>
+                                               )}
+                                           </div>
+                                       </div>
+                                   ))}
+                                   {/* TODO: Add pagination if needed */}
+                               </div>
+                           </ScrollArea>
+                       </TooltipProvider>
+                   )}
+               </div>
+               <DialogFooter>
+                   <DialogClose asChild>
+                       <Button variant="outline">{t('patInput.closeButton')}</Button>
+                   </DialogClose>
+               </DialogFooter>
+           </DialogContent>
+       </Dialog>
+   );
+}
+
+
 // --- GithubFileTree Component ---
 interface GithubFileTreeProps {
-  pat: string;
-  repoFullName: string;
-  branchName: string;
-  onFileNodeClick: (filePath: string) => void;
-  selectedFilePath: string | null;
-  modifiedFiles: Set<string>; // Add modified files set
-  onSaveRequest: (filePath: string) => void; // Add save request handler
+ pat: string;
+ repoFullName: string;
+ branchName: string;
+ // Modify signature to accept optional content and commitSha
+ onFileNodeClick: (filePath: string, content?: string, commitSha?: string) => void;
+ selectedFilePath: string | null;
+ modifiedFiles: Set<string>;
+ onSaveRequest: (filePath: string) => void;
 }
 
 export interface GithubFileTreeRef {
@@ -536,12 +856,12 @@ export interface GithubFileTreeRef {
 }
 
 export const GithubFileTree = forwardRef<GithubFileTreeRef, GithubFileTreeProps>(
-  ({ pat, repoFullName, branchName, onFileNodeClick, selectedFilePath, modifiedFiles, onSaveRequest }, ref) => { // Add new props
-    const { t } = useTranslation(); // Initialize hook in the main component too
+  ({ pat, repoFullName, branchName, onFileNodeClick, selectedFilePath, modifiedFiles, onSaveRequest }, ref) => {
+    const { t } = useTranslation();
     const [fileTree, setFileTree] = useState<FileSystemNode[]>([]);
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
-    const [apiError, setApiError] = useState<string | null>(null);
+    const [apiError, setApiError] = useState<string | null>(null); // Keep this for general API errors
     const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set()); // State for expanded folders
 
     const loadFileTree = useCallback(async () => {
@@ -717,6 +1037,16 @@ export const GithubFileTree = forwardRef<GithubFileTreeRef, GithubFileTreeProps>
       }
     }, [pat, repoFullName, branchName, t]);
 
+   // This function now handles both latest and historical file clicks
+   const handleFileNodeClick = useCallback((filePath: string, content?: string, commitSha?: string) => {
+       console.log(`File node clicked: ${filePath}`, commitSha ? `(Version: ${commitSha.substring(0,7)})` : '(Latest)');
+       // Clear API error when selecting a new file/version
+       setApiError(null);
+       // Call the prop passed from the parent (App.tsx)
+       onFileNodeClick(filePath, content, commitSha);
+   }, [onFileNodeClick]);
+
+
     return (
       <div className="p-2 border rounded-md bg-background text-sm h-full flex flex-col">
          {(error || apiError) && (
@@ -727,7 +1057,7 @@ export const GithubFileTree = forwardRef<GithubFileTreeRef, GithubFileTreeProps>
                     <AlertDescription>{error}</AlertDescription>
                     </Alert>
                 )}
-                {apiError && (
+                {apiError && ( // Display API errors (like version loading errors) here
                     <Alert variant="destructive" className={error ? "mt-2" : ""}>
                     <AlertTitle>{t('app.operationErrorTitle')}</AlertTitle>
                     <AlertDescription>{apiError}</AlertDescription>
@@ -750,19 +1080,20 @@ export const GithubFileTree = forwardRef<GithubFileTreeRef, GithubFileTreeProps>
                 key={node.path}
                 node={node}
                 level={0}
+                pat={pat} // Pass PAT
                 repoFullName={repoFullName}
                 branchName={branchName}
                 selectedFilePath={selectedFilePath}
-                isModified={modifiedFiles.has(node.path)} // Determine if node is modified
+                isModified={modifiedFiles.has(node.path)}
                 onRenameRequest={handleRenameNode}
                 onDeleteRequest={handleDeleteNode}
                 modifiedFiles={modifiedFiles}
-                isExpanded={expandedPaths.has(node.path)} // Pass isExpanded state
-                expandedPaths={expandedPaths} // Pass the full set
+                isExpanded={expandedPaths.has(node.path)}
+                expandedPaths={expandedPaths}
                 onSaveRequest={onSaveRequest}
-                onToggleExpand={handleToggleExpand} // Pass toggle handler
-                onApiError={setApiError}
-                onFileNodeClick={onFileNodeClick}
+                onToggleExpand={handleToggleExpand}
+                onApiError={setApiError} // Pass down the setter for API errors
+                onFileNodeClick={handleFileNodeClick} // Pass down the unified click handler
               />
             ))}
           </div>
