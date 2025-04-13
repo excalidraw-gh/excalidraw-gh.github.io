@@ -1,7 +1,7 @@
 // vite-project/src/components/GithubFileTree.tsx
 import React, { useState, useEffect, useCallback, useRef, forwardRef, useImperativeHandle } from 'react';
 import { useTranslation } from 'react-i18next'; // Import useTranslation
-import { Loader2, File, Folder, ChevronDown, ChevronRight, MoreHorizontal, Edit, Trash2 } from 'lucide-react';
+import { Loader2, File, Folder, ChevronDown, ChevronRight, MoreHorizontal, Edit, Trash2, Save } from 'lucide-react'; // Add Save icon
 import { cn } from "@/lib/utils";
 import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -100,7 +100,7 @@ async function fetchFileTree(pat: string, repoFullName: string, branchName: stri
 }
 
 // Get file SHA using Contents API
-async function getFileSha(pat: string, repoFullName: string, path: string, branch: string): Promise<string | null> {
+export async function getFileSha(pat: string, repoFullName: string, path: string, branch: string): Promise<string | null> { // Add export
     const url = `${GITHUB_API_BASE}/repos/${repoFullName}/contents/${path}?ref=${branch}`;
     try {
         const response = await fetch(url, { headers: { Authorization: `token ${pat}`, Accept: "application/vnd.github.v3+json" } });
@@ -129,15 +129,33 @@ async function deleteGithubFile(pat: string, repoFullName: string, path: string,
 }
 
 // Create a new file using Contents API
-async function createGithubFile(pat: string, repoFullName: string, path: string, content: string, branch: string, commitMessage: string): Promise<void> {
+// Create a new file using Contents API - Now returns file details including SHA
+async function createGithubFile(
+  pat: string,
+  repoFullName: string,
+  path: string,
+  content: string,
+  branch: string,
+  commitMessage: string
+): Promise<{ path: string; sha: string }> {
     const url = `${GITHUB_API_BASE}/repos/${repoFullName}/contents/${path}`;
     const encodedContent = btoa(unescape(encodeURIComponent(content)));
-    const response = await fetch(url, { method: 'PUT', headers: { Authorization: `token ${pat}`, Accept: "application/vnd.github.v3+json", 'Content-Type': 'application/json' }, body: JSON.stringify({ message: commitMessage, content: encodedContent, branch: branch }) });
-    if (!response.ok && response.status !== 201) {
+    const response = await fetch(url, {
+        method: 'PUT',
+        headers: {
+            Authorization: `token ${pat}`,
+            Accept: "application/vnd.github.v3+json",
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ message: commitMessage, content: encodedContent, branch: branch })
+    });
+    if (!response.ok || response.status !== 201) { // Expect 201 Created
         const errorData = await response.json().catch(() => ({}));
         throw new Error(`创建文件失败: ${response.status} ${response.statusText} - ${errorData.message || '未知错误'}`);
     }
-    console.log(`File ${path} created successfully.`);
+    const result = await response.json();
+    console.log(`File ${path} created successfully. SHA: ${result.content.sha}`);
+    return { path: result.content.path, sha: result.content.sha }; // Return path and SHA
 }
 
 // Get Reference (Branch) Info
@@ -186,6 +204,47 @@ async function updateRef(pat: string, repoFullName: string, branch: string, comm
     const response = await fetch(url, { method: 'PATCH', headers: { Authorization: `token ${pat}`, Accept: "application/vnd.github.v3+json", 'Content-Type': 'application/json' }, body: JSON.stringify({ sha: commitSha }) });
     if (!response.ok) { const errorData = await response.json().catch(() => ({})); throw new Error(`更新分支引用失败: ${response.status} - ${errorData.message}`); }
 }
+
+// Update/Create a file using Contents API (handles both create and update)
+export async function updateGithubFile( // Add export
+  pat: string,
+  repoFullName: string,
+  path: string,
+  content: string,
+  branch: string,
+  commitMessage: string,
+  sha?: string // Provide SHA for updates, omit for creates
+): Promise<{ sha: string }> { // Return only the new SHA for simplicity
+    const url = `${GITHUB_API_BASE}/repos/${repoFullName}/contents/${path}`;
+    const encodedContent = btoa(unescape(encodeURIComponent(content)));
+    const body: { message: string; content: string; branch: string; sha?: string } = {
+        message: commitMessage,
+        content: encodedContent,
+        branch: branch,
+    };
+    if (sha) {
+        body.sha = sha; // Add SHA only if updating an existing file
+    }
+
+    const response = await fetch(url, {
+        method: 'PUT',
+        headers: {
+            Authorization: `token ${pat}`,
+            Accept: "application/vnd.github.v3+json",
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(body)
+    });
+
+    if (!response.ok && response.status !== 201) { // 201 is for creation, 200 for update
+        const errorData = await response.json().catch(() => ({}));
+        const action = sha ? '更新' : '创建';
+        throw new Error(`${action}文件失败: ${response.status} ${response.statusText} - ${errorData.message || '未知错误'}`);
+    }
+    console.log(`File ${path} ${sha ? 'updated' : 'created'} successfully.`);
+    const result = await response.json();
+    return { sha: result.content.sha }; // Return only the new SHA
+}
 // --- End Helper Functions ---
 
 
@@ -195,15 +254,25 @@ interface TreeNodeProps {
   level: number;
   repoFullName: string;
   branchName: string;
+  selectedFilePath: string | null;
+  isModified: boolean;
+  modifiedFiles: Set<string>; // Pass down modified files set
+  isExpanded: boolean;
+  expandedPaths: Set<string>; // Pass down the full set for checking children
   onRenameRequest: (oldPath: string, newName: string) => Promise<void>;
   onDeleteRequest: (path: string, type: 'file' | 'directory') => Promise<void>;
+  onSaveRequest: (filePath: string) => void;
+  onToggleExpand: (path: string) => void;
   onApiError: (message: string) => void;
   onFileNodeClick: (filePath: string) => void;
 }
 
-function TreeNode({ node, level, repoFullName, branchName, onRenameRequest, onDeleteRequest, onApiError, onFileNodeClick }: TreeNodeProps) {
+function TreeNode({
+  node, level, repoFullName, branchName, selectedFilePath, isModified, modifiedFiles, isExpanded, expandedPaths, // Add expandedPaths
+  onRenameRequest, onDeleteRequest, onSaveRequest, onToggleExpand, onApiError, onFileNodeClick
+}: TreeNodeProps) {
   const { t } = useTranslation();
-  const [isOpen, setIsOpen] = useState(false);
+  // Remove internal isOpen state: const [isOpen, setIsOpen] = useState(false);
   const [isRenaming, setIsRenaming] = useState(false);
   const [newName, setNewName] = useState(node.name);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
@@ -216,9 +285,12 @@ function TreeNode({ node, level, repoFullName, branchName, onRenameRequest, onDe
 
   const hasChildren = node.children && node.children.length > 0;
 
+  // Use the callback prop to toggle expansion state in the parent
   const toggle = useCallback(() => {
-    if (hasChildren) setIsOpen(!isOpen);
-  }, [hasChildren, isOpen]);
+    if (node.type === 'directory' && hasChildren) {
+        onToggleExpand(node.path);
+    }
+  }, [node.path, node.type, hasChildren, onToggleExpand]);
 
   const handleRenameClick = () => {
     if (node.type === 'directory') {
@@ -294,17 +366,18 @@ function TreeNode({ node, level, repoFullName, branchName, onRenameRequest, onDe
       <div
         className={cn(
           "flex items-center space-x-1 py-1.5 px-2 rounded-md hover:bg-secondary hover:text-secondary-foreground",
-          isRenaming ? "bg-secondary" : ""
+          isRenaming ? "bg-secondary" : "",
+          node.type === 'file' && node.path === selectedFilePath ? "bg-primary/10 text-primary" : "" // 新增：高亮选中的文件
         )}
         style={{ paddingLeft: `${level * 16 + 8}px` }}
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
       >
-         <span onClick={toggle} className="cursor-pointer p-1 -ml-1">
+         <span onClick={toggle} className={cn("cursor-pointer p-1 -ml-1", node.type !== 'directory' && "invisible")}> {/* Hide toggle for files */}
           {hasChildren ? (
-            isOpen ? <ChevronDown className="h-4 w-4 shrink-0" /> : <ChevronRight className="h-4 w-4 shrink-0" />
+            isExpanded ? <ChevronDown className="h-4 w-4 shrink-0" /> : <ChevronRight className="h-4 w-4 shrink-0" />
           ) : (
-            <div className="w-4 h-4 shrink-0" />
+            <div className="w-4 h-4 shrink-0" /> // Keep placeholder for alignment
           )}
         </span>
         {node.type === 'directory' ? <Folder className="h-4 w-4 shrink-0 text-sky-500" /> : <File className="h-4 w-4 shrink-0 text-gray-500" />}
@@ -319,7 +392,7 @@ function TreeNode({ node, level, repoFullName, branchName, onRenameRequest, onDe
               onClick={handleNodeClick}
               onDoubleClick={handleRenameClick}
           >
-            {node.name}
+            {node.name}{isModified && <span className="text-red-500 ml-1">*</span>} {/* Show * if modified */}
           </span>
         )}
         {!isRenaming && (
@@ -330,6 +403,12 @@ function TreeNode({ node, level, repoFullName, branchName, onRenameRequest, onDe
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start">
+              {isModified && node.type === 'file' && ( // Show Save only for modified files
+                <DropdownMenuItem onClick={() => onSaveRequest(node.path)}>
+                  <Save className="mr-2 h-4 w-4" />
+                  {t('fileTree.saveAction', 'Save')} {/* Add translation key */}
+                </DropdownMenuItem>
+              )}
               <DropdownMenuItem onClick={handleRenameClick}>
                 <Edit className="mr-2 h-4 w-4" />
                 {t('fileTree.renameAction')}
@@ -343,17 +422,26 @@ function TreeNode({ node, level, repoFullName, branchName, onRenameRequest, onDe
         )}
       </div>
 
-      {isOpen && node.children && (
+      {isExpanded && node.children && ( // Use isExpanded prop
         <div>
           {node.children.map(child => (
             <TreeNode
-              key={child.path} node={child} level={level + 1}
+              key={child.path}
+              node={child}
+              level={level + 1}
               repoFullName={repoFullName}
               branchName={branchName}
+              selectedFilePath={selectedFilePath}
+              isModified={modifiedFiles.has(child.path)}
+              modifiedFiles={modifiedFiles} // Pass down modifiedFiles set
+              isExpanded={expandedPaths.has(child.path)} // Check against the passed down set
+              expandedPaths={expandedPaths} // Pass the full set down
               onRenameRequest={onRenameRequest}
               onDeleteRequest={onDeleteRequest}
+              onSaveRequest={onSaveRequest}
+              onToggleExpand={onToggleExpand}
               onApiError={onApiError}
-              onFileNodeClick={onFileNodeClick} // Pass down
+              onFileNodeClick={onFileNodeClick}
             />
           ))}
         </div>
@@ -436,21 +524,25 @@ interface GithubFileTreeProps {
   pat: string;
   repoFullName: string;
   branchName: string;
-  onFileNodeClick: (filePath: string) => void; // Add prop
+  onFileNodeClick: (filePath: string) => void;
+  selectedFilePath: string | null;
+  modifiedFiles: Set<string>; // Add modified files set
+  onSaveRequest: (filePath: string) => void; // Add save request handler
 }
 
 export interface GithubFileTreeRef {
   refreshTree: () => void;
-  createFile: (filePath: string) => Promise<void>;
+  createFile: (filePath: string) => Promise<{ path: string; sha: string }>; // Correct return type
 }
 
 export const GithubFileTree = forwardRef<GithubFileTreeRef, GithubFileTreeProps>(
-  ({ pat, repoFullName, branchName, onFileNodeClick }, ref) => { // Add prop
+  ({ pat, repoFullName, branchName, onFileNodeClick, selectedFilePath, modifiedFiles, onSaveRequest }, ref) => { // Add new props
     const { t } = useTranslation(); // Initialize hook in the main component too
     const [fileTree, setFileTree] = useState<FileSystemNode[]>([]);
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [apiError, setApiError] = useState<string | null>(null);
+    const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set()); // State for expanded folders
 
     const loadFileTree = useCallback(async () => {
       if (!pat || !repoFullName || !branchName) {
@@ -477,29 +569,54 @@ export const GithubFileTree = forwardRef<GithubFileTreeRef, GithubFileTreeProps>
       loadFileTree();
     }, [loadFileTree]);
 
+    // Handler to toggle folder expansion state
+    const handleToggleExpand = useCallback((path: string) => {
+        setExpandedPaths(prev => {
+            const newSet = new Set(prev);
+            if (newSet.has(path)) {
+                newSet.delete(path);
+            } else {
+                newSet.add(path);
+            }
+            return newSet;
+        });
+    }, []);
+
     useImperativeHandle(ref, () => ({
       refreshTree: () => {
         loadFileTree();
       },
-      createFile: async (filePath: string) => {
-        console.log(`API: Creating file ${filePath}`);
+      createFile: async (rawFilePath: string): Promise<{ path: string; sha: string }> => {
+        const filePath = rawFilePath.endsWith('.excalidraw') ? rawFilePath : `${rawFilePath}.excalidraw`;
+        const initialContent = JSON.stringify({
+          type: "excalidraw",
+          version: 2,
+          source: "excalidraw-gh",
+          elements: [],
+          appState: { gridSize: null, viewBackgroundColor: "#ffffff" },
+          files: {},
+        }, null, 2);
+
+        console.log(`API: Creating Excalidraw file ${filePath}`);
         setApiError(null);
         try {
-          await createGithubFile(
+          const creationResult = await createGithubFile( // Capture result
             pat,
             repoFullName,
             filePath,
-            "",
+            initialContent,
             branchName,
-            `feat: create file ${filePath}`
+            `feat: create Excalidraw file ${filePath.split('/').pop()}`
           );
-          await loadFileTree();
+          // Don't refresh immediately, return the details instead
+          // await loadFileTree();
+          return creationResult; // Return path and SHA
         } catch (error: any) {
           console.error("Create file API call failed:", error);
-          setApiError(t('createFileDialog.apiError', { filePath: filePath, error: error.message })); // Use t()
+          setApiError(t('createFileDialog.apiError', { filePath: filePath, error: error.message }));
           throw error;
         }
-      }
+      },
     }));
 
     const updateTreeState = (updater: (currentTree: FileSystemNode[]) => FileSystemNode[]) => {
@@ -630,13 +747,22 @@ export const GithubFileTree = forwardRef<GithubFileTreeRef, GithubFileTreeProps>
           <div className="flex-grow overflow-y-auto">
             {fileTree.map(node => (
               <TreeNode
-                key={node.path} node={node} level={0}
+                key={node.path}
+                node={node}
+                level={0}
                 repoFullName={repoFullName}
                 branchName={branchName}
+                selectedFilePath={selectedFilePath}
+                isModified={modifiedFiles.has(node.path)} // Determine if node is modified
                 onRenameRequest={handleRenameNode}
                 onDeleteRequest={handleDeleteNode}
+                modifiedFiles={modifiedFiles}
+                isExpanded={expandedPaths.has(node.path)} // Pass isExpanded state
+                expandedPaths={expandedPaths} // Pass the full set
+                onSaveRequest={onSaveRequest}
+                onToggleExpand={handleToggleExpand} // Pass toggle handler
                 onApiError={setApiError}
-                onFileNodeClick={onFileNodeClick} // Pass down
+                onFileNodeClick={onFileNodeClick}
               />
             ))}
           </div>

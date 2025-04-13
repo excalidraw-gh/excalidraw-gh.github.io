@@ -1,5 +1,5 @@
 // vite-project/src/App.tsx
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react"; // Add useCallback
 import { useTranslation } from 'react-i18next';
 import {
   Panel,
@@ -9,7 +9,8 @@ import {
 import "./panel-styles.css";
 import { GithubPatInput } from "./components/GithubPatInput";
 import { GithubFileBrowser, GithubFileBrowserRef } from "./components/GithubFileBrowser"; // Import ref type
-import { ExcalidrawWrapper } from "./components/ExcalidrawWrapper"; // Import ExcalidrawWrapper
+import { ExcalidrawWrapper, ExcalidrawWrapperRef } from "./components/ExcalidrawWrapper";
+import { SaveFileDialog } from "./components/SaveFileDialog"; // Import SaveFileDialog
 import { getPat } from "./lib/db";
 import {
   Select,
@@ -33,6 +34,8 @@ import {
   DialogTrigger,
   DialogClose,
 } from "@/components/ui/dialog";
+const LOCALSTORAGE_KEY_PREFERRED_REPO = 'preferredRepoIdentifier';
+
 
 // --- Interfaces and API Helpers ---
 interface Repo { id: number; name: string; full_name: string; private: boolean; }
@@ -96,8 +99,22 @@ function App() {
   const [openedFileContent, setOpenedFileContent] = useState<any | null>(null); // Using any for now
   const [isFileLoading, setIsFileLoading] = useState(false);
   const [fileLoadingError, setFileLoadingError] = useState<string | null>(null);
+  const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null); // 新增：状态来存储选中的文件路径
 
   const browserRef = useRef<GithubFileBrowserRef>(null);
+  const excalidrawWrapperRef = useRef<ExcalidrawWrapperRef>(null); // Ref for ExcalidrawWrapper
+
+  // State for tracking modified files
+  const [modifiedFiles, setModifiedFiles] = useState<Set<string>>(new Set());
+
+  // State for Save Prompt Dialog (when switching files)
+  const [showSaveDialog, setShowSaveDialog] = useState(false);
+  const [nextFilePathToOpen, setNextFilePathToOpen] = useState<string | null>(null); // File to open after prompt
+
+  // State for Commit Dialog (triggered by Save menu or Save prompt)
+  const [showCommitDialog, setShowCommitDialog] = useState(false);
+  const [fileToSavePath, setFileToSavePath] = useState<string | null>(null);
+  const [fileToOpenAfterCreate, setFileToOpenAfterCreate] = useState<string | null>(null); // State to trigger opening after creation
 
    useEffect(() => { /* Load PAT */
         async function fetchPat() {
@@ -108,16 +125,56 @@ function App() {
         }
         fetchPat();
     }, []);
-   useEffect(() => { /* Load Repos */
+   useEffect(() => { /* Load Repos with localStorage persistence */
         async function loadRepos() {
             if (!currentPat) return;
-            setIsLoadingRepos(true); setRepoBranchError(null); setSelectedRepo(null); setSelectedBranch(null); setRepos([]); setBranches([]);
-            try { const fetchedRepos = await fetchUserRepos(currentPat); setRepos(fetchedRepos); if (fetchedRepos.length > 0) { setSelectedRepo(fetchedRepos[0].full_name); } }
-            catch (err: any) { setRepoBranchError(err.message || t('app.loadingErrorTitle')); }
-            finally { setIsLoadingRepos(false); }
+            setIsLoadingRepos(true);
+            setRepoBranchError(null);
+            setSelectedRepo(null); // Reset selection initially
+            setSelectedBranch(null);
+            setRepos([]);
+            setBranches([]);
+
+            let preferredRepo: string | null = null;
+            try {
+                preferredRepo = localStorage.getItem(LOCALSTORAGE_KEY_PREFERRED_REPO);
+            } catch (error) {
+                console.error("Error reading preferred repo from localStorage:", error);
+                // Optionally notify the user or log this error
+            }
+
+            try {
+                const fetchedRepos = await fetchUserRepos(currentPat);
+                setRepos(fetchedRepos);
+
+                let repoToSelect: string | null = null;
+                if (fetchedRepos.length > 0) {
+                    // Try to select the preferred repo if it exists in the fetched list
+                    if (preferredRepo && fetchedRepos.some(repo => repo.full_name === preferredRepo)) {
+                        repoToSelect = preferredRepo;
+                    } else {
+                        // Fallback to the first repo if preferred is invalid or not found
+                        repoToSelect = fetchedRepos[0].full_name;
+                        // Clear invalid preferred repo from localStorage
+                        if (preferredRepo) {
+                            try {
+                                localStorage.removeItem(LOCALSTORAGE_KEY_PREFERRED_REPO);
+                            } catch (error) {
+                                console.error("Error removing invalid preferred repo from localStorage:", error);
+                            }
+                        }
+                    }
+                }
+                setSelectedRepo(repoToSelect); // Set the selected repo state
+
+            } catch (err: any) {
+                setRepoBranchError(err.message || t('app.loadingErrorTitle'));
+            } finally {
+                setIsLoadingRepos(false);
+            }
         }
         loadRepos();
-    }, [currentPat, t]);
+    }, [currentPat, t]); // Dependency array remains the same
    useEffect(() => { /* Load Branches */
         async function loadBranches() {
             if (!currentPat || !selectedRepo) return;
@@ -131,37 +188,67 @@ function App() {
 
    const handlePatSaved = (newPat: string) => { setCurrentPat(newPat); setShowSettingsDialog(false); };
    const handlePatCleared = () => { setCurrentPat(null); setRepos([]); setSelectedRepo(null); setBranches([]); setSelectedBranch(null); setRepoBranchError(null); setShowSettingsDialog(false); };
-   const handleRepoChange = (repoFullName: string) => { setSelectedRepo(repoFullName); setOpenedFilePath(null); setOpenedFileContent(null); };
-   const handleBranchChange = (branchName: string) => { setSelectedBranch(branchName); setOpenedFilePath(null); setOpenedFileContent(null); };
+   const handleRepoChange = (repoFullName: string) => {
+        setSelectedRepo(repoFullName);
+        setSelectedFilePath(null); // 新增：切换仓库时清除选中文件
+        setOpenedFilePath(null);
+        setOpenedFileContent(null);
+        // Save the selected repo to localStorage
+        try {
+            localStorage.setItem(LOCALSTORAGE_KEY_PREFERRED_REPO, repoFullName);
+        } catch (error) {
+            console.error("Error saving preferred repo to localStorage:", error);
+            // Optionally notify the user or handle the error (e.g., storage full)
+        }
+    };
+   const handleBranchChange = (branchName: string) => { setSelectedBranch(branchName); setSelectedFilePath(null); setOpenedFilePath(null); setOpenedFileContent(null); }; // 新增：切换分支时清除选中文件
    const handleCreateFileSubmit = async (event: React.FormEvent) => {
         event.preventDefault();
         const trimmedPath = newFilePath.trim();
         if (!trimmedPath || !browserRef.current) return;
         if (trimmedPath.startsWith('/') || trimmedPath.endsWith('/') || trimmedPath.includes('//')) { setCreateFileError(t('createFileDialog.formatError')); return; }
-        setIsCreatingFile(true); setCreateFileError(null);
-        try { await browserRef.current.createFile(trimmedPath); setShowCreateFileDialog(false); setNewFilePath(''); }
-        catch (error: any) { setCreateFileError(error.message || t('createFileDialog.apiError', { filePath: trimmedPath, error: 'Unknown error' })); }
-        finally { setIsCreatingFile(false); }
+        setIsCreatingFile(true);
+        setCreateFileError(null);
+        let finalPath = ''; // Define finalPath outside try
+        try {
+            finalPath = trimmedPath.endsWith('.excalidraw') ? trimmedPath : `${trimmedPath}.excalidraw`;
+            await browserRef.current.createFile(trimmedPath); // Call the create method
+            setShowCreateFileDialog(false);
+            setNewFilePath('');
+            // --- REMOVED immediate refreshTree call ---
+            // Set state to trigger opening in useEffect
+            console.log(`[DEBUG] App: File created, setting state to open: ${finalPath}`);
+            setFileToOpenAfterCreate(finalPath); // Trigger useEffect to open the file
+        } catch (error: any) {
+            setCreateFileError(error.message || t('createFileDialog.apiError', { filePath: trimmedPath, error: 'Unknown error' }));
+        } finally {
+            setIsCreatingFile(false); // Correctly placed finally block
+        }
     };
 
-  // --- Handler for file node click ---
-  const handleFileNodeClick = async (filePath: string) => {
-      if (!filePath.toLowerCase().endsWith('.excalidraw')) {
-          console.log("Clicked non-excalidraw file:", filePath);
-          setOpenedFilePath(null);
-          setOpenedFileContent(null);
-          return;
+  // --- Effect to open file after creation ---
+  useEffect(() => {
+      if (fileToOpenAfterCreate) {
+          console.log(`[DEBUG] App: useEffect triggered to open file: ${fileToOpenAfterCreate}`);
+          handleFileNodeClick(fileToOpenAfterCreate);
+          setFileToOpenAfterCreate(null); // Reset the trigger state
       }
+  }, [fileToOpenAfterCreate]); // Dependency on the trigger state
+
+  // --- Handler for file node click ---
+  // Function to actually load the file content
+  const loadFileContent = async (filePathToLoad: string) => {
       if (!currentPat || !selectedRepo || !selectedBranch) return;
 
-      console.log("Opening Excalidraw file:", filePath);
+      console.log("Opening Excalidraw file:", filePathToLoad);
       setIsFileLoading(true);
       setFileLoadingError(null);
-      setOpenedFilePath(filePath);
-      setOpenedFileContent(null);
+      setSelectedFilePath(filePathToLoad); // Highlight the selected file
+      setOpenedFilePath(filePathToLoad);   // Mark it as the currently opened file
+      setOpenedFileContent(null);        // Clear previous content while loading
 
       try {
-          const rawContent = await getGithubFileContent(currentPat, selectedRepo, filePath, selectedBranch);
+          const rawContent = await getGithubFileContent(currentPat, selectedRepo, filePathToLoad, selectedBranch);
           try {
               const parsedData = JSON.parse(rawContent);
               if (parsedData && Array.isArray(parsedData.elements)) {
@@ -169,25 +256,202 @@ function App() {
                       elements: parsedData.elements,
                       appState: parsedData.appState
                   });
+                  // Successfully loaded, ensure it's not marked as modified initially
+                  setModifiedFiles(prev => {
+                      const newSet = new Set(prev);
+                      newSet.delete(filePathToLoad);
+                      return newSet;
+                  });
               } else {
                   throw new Error("Invalid Excalidraw file format (missing 'elements' array).");
               }
           } catch (parseError: any) {
               console.error("Failed to parse Excalidraw content:", parseError);
-              throw new Error(`文件 "${filePath}" 不是有效的 Excalidraw JSON 格式: ${parseError.message}`);
+              throw new Error(`文件 "${filePathToLoad}" 不是有效的 Excalidraw JSON 格式: ${parseError.message}`);
           }
       } catch (error: any) {
           console.error("Failed to load file content:", error);
           setFileLoadingError(error.message);
-          setOpenedFilePath(null);
+          setOpenedFilePath(null); // Clear opened file path on error
           setOpenedFileContent(null);
+          // Keep selectedFilePath so user knows which file failed
       } finally {
           setIsFileLoading(false);
       }
   };
 
+  // --- Handler for file node click ---
+  const handleFileNodeClick = (filePath: string) => {
+      // Prevent action if already loading or same file clicked
+      if (isFileLoading || filePath === openedFilePath) {
+          return;
+      }
 
-  return (
+      // Handle non-excalidraw files (just select, don't open/prompt)
+      if (!filePath.toLowerCase().endsWith('.excalidraw')) {
+          console.log("Clicked non-excalidraw file:", filePath);
+          setSelectedFilePath(filePath);
+          // Optionally clear the editor if a non-excalidraw file is selected
+          // setOpenedFilePath(null);
+          // setOpenedFileContent(null);
+          return;
+      }
+
+      // Check if the CURRENTLY opened file has unsaved changes
+      if (openedFilePath && modifiedFiles.has(openedFilePath)) {
+          console.log(`Current file ${openedFilePath} has modifications. Prompting user.`);
+          setNextFilePathToOpen(filePath); // Store the file user wants to open
+          setShowSaveDialog(true);       // Show the save prompt dialog
+      } else {
+          // No modifications or no file currently open, proceed to load the new file
+          loadFileContent(filePath);
+      }
+
+  };
+
+  // --- Handler to trigger the commit dialog ---
+  const handleSaveRequest = (filePathToSave: string) => {
+      console.log(`%c[DEBUG] App: handleSaveRequest TRIGGERED for: ${filePathToSave}`, 'color: blue; font-weight: bold;');
+      console.log(`Save requested for: ${filePathToSave}`);
+      setFileToSavePath(filePathToSave);
+      setShowCommitDialog(true); // This will eventually open the SaveFileDialog component
+  };
+
+  // --- Handlers for the Save Prompt Dialog ---
+  const handlePromptSave = () => {
+      setShowSaveDialog(false);
+      if (openedFilePath) {
+          handleSaveRequest(openedFilePath); // Trigger save for the *current* file
+      }
+      // TODO: Consider what happens if save fails. Should we still open the next file?
+      // For now, we assume save will eventually succeed or handle its own errors via SaveFileDialog
+      // and we clear the next file path. A more robust solution might wait for save confirmation.
+      setNextFilePathToOpen(null);
+  };
+
+  const handlePromptDiscard = () => {
+      setShowSaveDialog(false);
+      if (openedFilePath) {
+          // Remove the modification flag
+          setModifiedFiles(prev => {
+              const newSet = new Set(prev);
+              newSet.delete(openedFilePath);
+              console.log(`Discarded changes for: ${openedFilePath}`);
+              return newSet;
+          });
+      }
+      // Proceed to load the next file
+      if (nextFilePathToOpen) {
+          loadFileContent(nextFilePathToOpen);
+      }
+      setNextFilePathToOpen(null);
+  };
+
+  const handlePromptCancel = () => {
+      setShowSaveDialog(false);
+      setNextFilePathToOpen(null); // Reset the intended action
+      console.log("Save prompt cancelled.");
+  };
+
+  // --- Callbacks for SaveFileDialog ---
+  const handleSaveSuccess = (savedFilePath: string, newSha: string) => { // Add newSha
+      console.log(`%c[DEBUG] App: handleSaveSuccess CALLED for ${savedFilePath} with new SHA ${newSha}`, 'color: green; font-weight: bold;');
+      console.log(`[DEBUG] App: handleSaveSuccess called for ${savedFilePath} with new SHA ${newSha}`);
+      setShowCommitDialog(false);
+      setFileToSavePath(null);
+      // Remove modification flag
+      setModifiedFiles(prev => {
+          const newSet = new Set(prev);
+          newSet.delete(savedFilePath);
+          console.log(`[DEBUG] App: Removed modification flag for: ${savedFilePath}`);
+          return newSet;
+      });
+      // Update ExcalidrawWrapper's baseline to prevent immediate re-flagging as modified
+      const latestContent = getLatestExcalidrawContent(); // Get current content
+      if (latestContent && excalidrawWrapperRef.current) {
+          console.log("[DEBUG] App: Updating ExcalidrawWrapper original state after save.");
+          excalidrawWrapperRef.current.updateOriginalState(latestContent.elements);
+      } else {
+          console.warn("[DEBUG] App: Could not update ExcalidrawWrapper original state after save (ref or content missing).");
+      }
+      // Force refresh the file tree to get the latest SHAs from GitHub
+      console.log("[DEBUG] App: Refreshing file tree after successful save.");
+      browserRef.current?.refreshTree(); // Ensure this line is active
+
+      // If save was triggered by switching files, load the next file now
+      if (nextFilePathToOpen) {
+          console.log(`[DEBUG] App: Loading next file after save: ${nextFilePathToOpen}`);
+          loadFileContent(nextFilePathToOpen);
+          setNextFilePathToOpen(null);
+      }
+  };
+
+  const handleSaveCancel = () => {
+      setShowCommitDialog(false);
+      setFileToSavePath(null);
+      console.log("Save cancelled.");
+      // If save was cancelled after a prompt, don't open the next file
+      if (nextFilePathToOpen) {
+          console.log("Save cancelled, not opening next file:", nextFilePathToOpen);
+          setNextFilePathToOpen(null);
+      }
+  };
+
+  const handleSaveError = (error: Error) => {
+      // Error is already logged in SaveFileDialog, maybe show a toast or alert here
+      console.error("Save failed in App:", error.message);
+      // Keep the dialog open for the user to see the error message within it
+      // Optionally, display a more user-friendly message in App's UI
+      // setAppLevelError(`Failed to save file: ${error.message}`);
+  };
+
+  // --- Function to get latest content from Excalidraw ---
+  const getLatestExcalidrawContent = useCallback(() => {
+      if (excalidrawWrapperRef.current) {
+          return {
+              elements: excalidrawWrapperRef.current.getSceneElements(),
+              appState: excalidrawWrapperRef.current.getAppState(),
+          };
+      }
+      console.error("Excalidraw ref not available to get content.");
+      return null;
+  }, []); // No dependencies needed if ref itself doesn't change
+
+  // --- Handler for Excalidraw content change ---
+  const handleExcalidrawChange = useCallback((
+      _elements: readonly any[],
+      _appState: any,
+      _files: any,
+      isModified: boolean
+  ) => {
+      console.log(`[DEBUG] App: handleExcalidrawChange called for ${openedFilePath} with isModified: ${isModified}`);
+      if (openedFilePath) {
+          setModifiedFiles(prev => {
+              const newSet = new Set(prev);
+              const currentlyMarked = newSet.has(openedFilePath);
+              if (isModified) {
+                  if (!currentlyMarked) {
+                      console.log(`[DEBUG] App: Marking file as modified: ${openedFilePath}`);
+                      newSet.add(openedFilePath);
+                  }
+              } else {
+                  if (currentlyMarked) {
+                      console.log(`[DEBUG] App: Marking file as unmodified: ${openedFilePath}`);
+                      console.log(`File marked as unmodified: ${openedFilePath}`);
+                      newSet.delete(openedFilePath);
+                  }
+              }
+              // Only return a new Set object if it actually changed to avoid unnecessary re-renders
+              if ((isModified && !currentlyMarked) || (!isModified && currentlyMarked)) {
+                  return newSet;
+              }
+              return prev; // Return previous state if no change
+          });
+      }
+  }, [openedFilePath]); // Dependency: openedFilePath
+
+
+  return (<> {/* Wrap in fragment */}
     <PanelGroup direction="horizontal" className="h-screen w-screen">
       <Panel defaultSize={20} minSize={20} maxSize={50} className="bg-gray-100 p-4 flex flex-col">
         {/* Header Section: Repo Selector and Settings Button */}
@@ -243,12 +507,15 @@ function App() {
               <DialogContent>
                  <DialogHeader>
                     <DialogTitle>{t('createFileDialog.title')}</DialogTitle>
-                    <DialogDescription>{t('createFileDialog.description')}</DialogDescription>
+                    {/* <DialogDescription>{t('createFileDialog.description')}</DialogDescription> */}
                     </DialogHeader>
                     <form onSubmit={handleCreateFileSubmit} className="space-y-4">
                     <div className="space-y-2">
-                        <Label htmlFor="new-file-path-app">{t('createFileDialog.pathLabel')}</Label>
-                        <Input id="new-file-path-app" value={newFilePath} onChange={(e) => { setNewFilePath(e.target.value); setCreateFileError(null); }} placeholder={t('createFileDialog.pathPlaceholder')} disabled={isCreatingFile} required />
+                        {/* <Label htmlFor="new-file-path-app">{t('createFileDialog.pathLabel')}</Label> */}
+                        <div className="flex items-center space-x-1">
+                          <Input id="new-file-path-app" className="flex-grow" value={newFilePath} onChange={(e) => { setNewFilePath(e.target.value); setCreateFileError(null); }} placeholder={t('createFileDialog.pathPlaceholder')} disabled={isCreatingFile} required />
+                          <span className="text-sm text-muted-foreground flex-shrink-0">.excalidraw</span>
+                        </div>
                     </div>
                     {createFileError && <Alert variant="destructive"><AlertTitle>{t('createFileDialog.title')}</AlertTitle><AlertDescription>{t('createFileDialog.apiError', { filePath: newFilePath, error: createFileError })}</AlertDescription></Alert>}
                     <DialogFooter>
@@ -280,7 +547,10 @@ function App() {
                 pat={currentPat}
                 selectedRepo={selectedRepo}
                 selectedBranch={selectedBranch}
-                onFileNodeClick={handleFileNodeClick} // Pass the handler
+                onFileNodeClick={handleFileNodeClick}
+                selectedFilePath={selectedFilePath}
+                modifiedFiles={modifiedFiles} // Pass down modified files set
+                onSaveRequest={handleSaveRequest} // Pass down save request handler
             />
           ) : (
             <GithubPatInput onPatSaved={handlePatSaved} onPatCleared={handlePatCleared} />
@@ -313,8 +583,9 @@ function App() {
         ) : openedFilePath && openedFileContent ? (
             <ExcalidrawWrapper
                 key={openedFilePath}
+                ref={excalidrawWrapperRef} // Assign ref
                 initialData={openedFileContent}
-                // onChange={handleExcalidrawChange} // Add this in Phase 2
+                onChange={handleExcalidrawChange} // Pass the change handler
             />
         ) : (
             <div className="flex-grow flex items-center justify-center text-muted-foreground">
@@ -323,7 +594,39 @@ function App() {
         )}
       </Panel>
     </PanelGroup>
-  );
+
+    {/* Save Prompt Dialog */}
+    <Dialog open={showSaveDialog} onOpenChange={setShowSaveDialog}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{t('savePrompt.title', 'Save Changes?')}</DialogTitle> {/* Added default text */}
+          <DialogDescription>
+            {t('savePrompt.description', 'The file "{{fileName}}" has unsaved changes. Do you want to save them before opening the next file?', { fileName: openedFilePath?.split('/').pop() || 'current file' })} {/* Added default text */}
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button variant="outline" onClick={handlePromptCancel}>{t('savePrompt.cancelButton', 'Cancel')}</Button> {/* Added default text */}
+          <Button variant="destructive" onClick={handlePromptDiscard}>{t('savePrompt.discardButton', 'Discard')}</Button> {/* Added default text */}
+          <Button onClick={handlePromptSave}>{t('savePrompt.saveButton', 'Save')}</Button> {/* Added default text */}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    {/* Save File Dialog (Commit Message) */}
+    <SaveFileDialog
+      isOpen={showCommitDialog}
+      onOpenChange={setShowCommitDialog}
+      filePathToSave={fileToSavePath}
+      pat={currentPat}
+      repoFullName={selectedRepo}
+      branchName={selectedBranch}
+      getLatestContent={getLatestExcalidrawContent}
+      onSaveSuccess={handleSaveSuccess} // Updated signature is compatible
+      onSaveCancel={handleSaveCancel}
+      onSaveError={handleSaveError}
+    />
+
+  </>); // Wrap in fragment
 }
 
 export default App;
