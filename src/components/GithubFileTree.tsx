@@ -20,7 +20,7 @@ import {
   DialogHeader,
   DialogTitle,
   DialogClose,
-  DialogTrigger, // 需要导入 DialogTrigger
+  // DialogTrigger, // Removed unused import
 } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area"; // 用于版本列表滚动
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"; // Import Tooltip
@@ -188,13 +188,7 @@ async function getCommit(pat: string, repoFullName: string, commitSha: string): 
     return response.json();
 }
 
-// Get Tree Info (needed for file mode)
-async function getTree(pat: string, repoFullName: string, treeSha: string): Promise<{ tree: Array<{ path: string; mode: string; type: string; sha: string }> }> {
-    const url = `${GITHUB_API_BASE}/repos/${repoFullName}/git/trees/${treeSha}`;
-    const response = await fetch(url, { headers: { Authorization: `token ${pat}`, Accept: "application/vnd.github.v3+json" } });
-    if (!response.ok) throw new Error(`获取 Tree 失败: ${response.status}`);
-    return response.json();
-}
+// Removed unused getTree function (lines 192-197 deleted)
 
 // Create a new Tree
 async function createTree(pat: string, repoFullName: string, baseTreeSha: string, treeNodes: Array<{ path: string; mode: string; type: string; sha: string | null }>): Promise<{ sha: string }> {

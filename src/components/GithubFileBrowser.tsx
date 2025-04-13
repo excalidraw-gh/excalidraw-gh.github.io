@@ -1,5 +1,5 @@
 // vite-project/src/components/GithubFileBrowser.tsx
-import React, { useRef, forwardRef, useImperativeHandle } from 'react';
+import { useRef, forwardRef, useImperativeHandle } from 'react'; // Removed unused React import
 import { useTranslation } from 'react-i18next'; // Import useTranslation
 import { GithubFileTree, GithubFileTreeRef } from "./GithubFileTree";
 
