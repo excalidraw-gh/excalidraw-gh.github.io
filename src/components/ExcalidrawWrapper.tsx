@@ -5,6 +5,7 @@ import { Excalidraw } from "@excalidraw/excalidraw";
 import "@excalidraw/excalidraw/index.css"; // Import Excalidraw CSS
 // Removed CSS import as it's linked in index.html
 import { useTranslation } from 'react-i18next';
+import { saveCachedFile, deleteCachedFile, CachedFileData } from '../lib/db';
 
 // Define props using inline types or any for now
 interface ExcalidrawWrapperProps {
@@ -15,6 +16,11 @@ interface ExcalidrawWrapperProps {
   } | null;
   // Update onChange prop type to include isModified
   onChange?: (elements: readonly any[], appState: any, files: any, isModified: boolean) => void;
+  // 添加缓存相关的props
+  filePath?: string;
+  repoFullName?: string;
+  branch?: string;
+  originalSha?: string;
 }
 
 // Define ref type using any for now
@@ -25,7 +31,7 @@ export interface ExcalidrawWrapperRef {
 }
 
 export const ExcalidrawWrapper = React.forwardRef<ExcalidrawWrapperRef, ExcalidrawWrapperProps>(
-  ({ initialData, onChange }, ref) => {
+  ({ initialData, onChange, filePath, repoFullName, branch, originalSha }, ref) => {
     const { i18n } = useTranslation();
     // Use any for the API state type
     const [excalidrawAPI, setExcalidrawAPI] = useState<any | null>(null);
@@ -85,6 +91,37 @@ export const ExcalidrawWrapper = React.forwardRef<ExcalidrawWrapperRef, Excalidr
         }
     }, [initialData, excalidrawAPI]); // Keep dependencies
 
+    // 保存到本地缓存的防抖函数
+    const debouncedSaveToCache = useCallback(
+        debounce(async (elements: readonly any[], appState: any, files: any) => {
+            if (!filePath || !repoFullName || !branch) {
+                console.log('[DEBUG] ExcalidrawWrapper: Skipping cache save, missing file info');
+                return;
+            }
+
+            try {
+                const cacheData: CachedFileData = {
+                    filePath,
+                    repoFullName,
+                    branch,
+                    content: {
+                        elements,
+                        appState,
+                        files
+                    },
+                    lastModified: Date.now(),
+                    originalSha
+                };
+                
+                await saveCachedFile(cacheData);
+                console.log(`[DEBUG] ExcalidrawWrapper: Saved to cache: ${filePath}`);
+            } catch (error) {
+                console.error('[DEBUG] ExcalidrawWrapper: Failed to save to cache:', error);
+            }
+        }, 1000), // 1秒防抖
+        [filePath, repoFullName, branch, originalSha]
+    );
+
     // Debounced function to perform comparison and notify parent
     const debouncedCompareAndNotify = useCallback(
         debounce((elements: readonly any[], appState: any, files: any) => {
@@ -100,12 +137,16 @@ export const ExcalidrawWrapper = React.forwardRef<ExcalidrawWrapperRef, Excalidr
             console.log(`[DEBUG]   - Current Elements String (start):  ${currentString.substring(0, 80)}...`);
             console.log(`[DEBUG]   - Strings Equal: ${currentString === originalElementsString}`);
             console.log(`[DEBUG]   - Calculated isModified: ${isModified}`);
+            
+            // 保存到本地缓存（无论是否修改都保存，以便恢复状态）
+            debouncedSaveToCache(elements, appState, files);
+            
             // Call the actual onChange prop passed from App.tsx
             if (onChange) {
                 onChange(elements, appState, files, isModified);
             }
         }, 500), // Debounce delay 500ms
-        [originalElementsString, onChange] // Dependencies
+        [originalElementsString, onChange, debouncedSaveToCache] // Dependencies
     );
 
     // Raw onChange handler from Excalidraw
@@ -113,6 +154,36 @@ export const ExcalidrawWrapper = React.forwardRef<ExcalidrawWrapperRef, Excalidr
         // Trigger the debounced comparison and notification
         debouncedCompareAndNotify(elements, appState, files);
     };
+
+    // 当文件保存成功后，清除对应的缓存
+    const clearCacheOnSave = useCallback(async () => {
+        if (filePath && repoFullName && branch) {
+            try {
+                await deleteCachedFile(repoFullName, branch, filePath);
+                console.log(`[DEBUG] ExcalidrawWrapper: Cleared cache for saved file: ${filePath}`);
+            } catch (error) {
+                console.error('[DEBUG] ExcalidrawWrapper: Failed to clear cache:', error);
+            }
+        }
+    }, [filePath, repoFullName, branch]);
+
+    // 暴露清除缓存的方法给父组件
+    React.useImperativeHandle(ref, () => ({
+      getSceneElements: () => {
+        return excalidrawAPI?.getSceneElements() || [];
+      },
+      getAppState: () => {
+        return excalidrawAPI?.getAppState() || {}; // Return empty object as default
+      },
+      updateOriginalState: (elements: readonly any[]) => {
+        console.log('[DEBUG] ExcalidrawWrapper: Updating original elements string after save.');
+        const newBaseline = JSON.stringify(elements);
+        console.log(`[DEBUG]   - New Baseline String (start): ${newBaseline.substring(0, 80)}...`);
+        setOriginalElementsString(newBaseline);
+        // 保存成功后清除缓存
+        clearCacheOnSave();
+      }
+    }), [clearCacheOnSave]);
 
     // Log the props being passed down to the actual Excalidraw component
     console.log('[DEBUG] Props passed to Excalidraw component:', { initialData, onChange: handleRawExcalidrawChange, langCode: i18n.language.startsWith('zh') ? 'zh-CN' : 'en' });

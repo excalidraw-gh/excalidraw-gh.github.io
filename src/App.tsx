@@ -1,5 +1,6 @@
 // vite-project/src/App.tsx
 import React, { useState, useEffect, useRef, useCallback } from "react"; // Add useCallback
+import { useNavigate, useLocation } from 'react-router-dom'; // 添加路由hooks
 import { useTranslation } from 'react-i18next';
 import {
   Panel,
@@ -11,7 +12,9 @@ import { GithubPatInput } from "./components/GithubPatInput";
 import { GithubFileBrowser, GithubFileBrowserRef } from "./components/GithubFileBrowser"; // Import ref type
 import { ExcalidrawWrapper, ExcalidrawWrapperRef } from "./components/ExcalidrawWrapper";
 import { SaveFileDialog } from "./components/SaveFileDialog"; // Import SaveFileDialog
-import { getPat } from "./lib/db";
+import { CacheManager } from "./components/CacheManager"; // 添加缓存管理器导入
+import { getPat, getCachedFile, clearCachedFiles } from "./lib/db"; // 添加缓存相关导入
+import { parseRouteParams, buildFileRoute, buildRepoRoute } from "./lib/router"; // 添加路由工具导入
 import {
   Select,
   SelectContent,
@@ -20,7 +23,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Settings, Plus, GitBranch, Loader2 } from 'lucide-react';
+import { Settings, Plus, GitBranch, Loader2, Database } from 'lucide-react'; // 添加Database图标
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 // import { Label } from "@/components/ui/label"; // Removed unused import
@@ -79,6 +82,9 @@ async function getGithubFileContent(t: Function, pat: string, repoFullName: stri
 
 function App() {
   const { t } = useTranslation();
+  const navigate = useNavigate(); // 路由导航hook
+  const location = useLocation(); // 当前路由位置hook
+  
   const [currentPat, setCurrentPat] = useState<string | null>(null);
   const [isLoadingPat, setIsLoadingPat] = useState(true);
   const [repos, setRepos] = useState<Repo[]>([]);
@@ -101,6 +107,7 @@ function App() {
   const [fileLoadingError, setFileLoadingError] = useState<string | null>(null);
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null); // Store the path selected in the tree
   const [openedCommitSha, setOpenedCommitSha] = useState<string | null>(null); // Store the SHA if a specific version is opened
+  const [openedFileOriginalSha, setOpenedFileOriginalSha] = useState<string | null>(null); // 存储文件的原始SHA，用于缓存
 
   const browserRef = useRef<GithubFileBrowserRef>(null);
   const excalidrawWrapperRef = useRef<ExcalidrawWrapperRef>(null); // Ref for ExcalidrawWrapper
@@ -116,6 +123,52 @@ function App() {
   const [showCommitDialog, setShowCommitDialog] = useState(false);
   const [fileToSavePath, setFileToSavePath] = useState<string | null>(null);
   const [fileToOpenAfterCreate, setFileToOpenAfterCreate] = useState<string | null>(null); // State to trigger opening after creation
+  const [showCacheManager, setShowCacheManager] = useState(false); // 缓存管理器状态
+
+  // 路由同步状态
+  const [isInitializing, setIsInitializing] = useState(true); // 标记是否正在初始化
+
+  // 路由同步 - 从URL恢复状态
+  useEffect(() => {
+    if (!currentPat || isLoadingRepos || repos.length === 0) {
+      return; // 等待PAT和仓库列表加载完成
+    }
+
+    const routeParams = parseRouteParams(location.pathname);
+    console.log('[DEBUG] Route sync: parsing route params:', routeParams);
+
+    // 如果URL中有仓库信息，尝试恢复状态
+    if (routeParams.repo) {
+      const repoExists = repos.some(repo => repo.full_name === routeParams.repo);
+      if (repoExists && selectedRepo !== routeParams.repo) {
+        console.log('[DEBUG] Route sync: setting repo from URL:', routeParams.repo);
+        setSelectedRepo(routeParams.repo);
+        return; // 等待分支加载
+      }
+    }
+
+    // 如果URL中有分支信息，尝试恢复状态
+    if (routeParams.branch && selectedRepo === routeParams.repo && branches.length > 0) {
+      const branchExists = branches.some(branch => branch.name === routeParams.branch);
+      if (branchExists && selectedBranch !== routeParams.branch) {
+        console.log('[DEBUG] Route sync: setting branch from URL:', routeParams.branch);
+        setSelectedBranch(routeParams.branch);
+        return; // 等待文件加载
+      }
+    }
+
+    // 如果URL中有文件信息，尝试打开文件
+    if (routeParams.filePath && 
+        selectedRepo === routeParams.repo && 
+        selectedBranch === routeParams.branch &&
+        openedFilePath !== routeParams.filePath &&
+        !isFileLoading) {
+      console.log('[DEBUG] Route sync: opening file from URL:', routeParams.filePath);
+      handleFileNodeClick(routeParams.filePath);
+    }
+
+    setIsInitializing(false);
+  }, [location.pathname, currentPat, repos, selectedRepo, branches, selectedBranch, openedFilePath, isLoadingRepos, isFileLoading]);
 
    useEffect(() => { /* Load PAT */
         async function fetchPat() {
@@ -194,15 +247,37 @@ function App() {
         setSelectedFilePath(null); // 新增：切换仓库时清除选中文件
         setOpenedFilePath(null);
         setOpenedFileContent(null);
+        setOpenedFileOriginalSha(null); // 清除原始SHA
+        
+        // 更新URL路由
+        if (!isInitializing) {
+          navigate(buildRepoRoute(repoFullName));
+        }
+        
         // Save the selected repo to localStorage
         try {
             localStorage.setItem(LOCALSTORAGE_KEY_PREFERRED_REPO, repoFullName);
         } catch (error) {
             console.error("Error saving preferred repo to localStorage:", error);
-            // Optionally notify the user or handle the error (e.g., storage full)
         }
     };
-   const handleBranchChange = (branchName: string) => { setSelectedBranch(branchName); setSelectedFilePath(null); setOpenedFilePath(null); setOpenedFileContent(null); }; // 新增：切换分支时清除选中文件
+   const handleBranchChange = (branchName: string) => { 
+        setSelectedBranch(branchName); 
+        setSelectedFilePath(null); 
+        setOpenedFilePath(null); 
+        setOpenedFileContent(null); 
+        setOpenedFileOriginalSha(null); // 清除原始SHA
+        
+        // 更新URL路由
+        if (!isInitializing && selectedRepo) {
+          navigate(buildRepoRoute(selectedRepo, branchName));
+        }
+        
+        // 切换分支时清除当前分支的缓存
+        if (selectedRepo) {
+            clearCachedFiles(selectedRepo, branchName).catch(console.error);
+        }
+    }; // 新增：切换分支时清除选中文件
    const handleCreateFileSubmit = async (event: React.FormEvent) => {
         event.preventDefault();
         const trimmedPath = newFilePath.trim();
@@ -249,17 +324,45 @@ function App() {
       setOpenedFilePath(filePathToLoad);   // Mark it as the currently opened file
       setOpenedCommitSha(null);            // Explicitly mark as latest version
       setOpenedFileContent(null);        // Clear previous content while loading
+      setOpenedFileOriginalSha(null);     // 清除原始SHA
 
       try {
-          const rawContent = await getGithubFileContent(t, currentPat, selectedRepo, filePathToLoad, selectedBranch); // Pass t
-          // Proceed to parse and set content (common logic)
-          parseAndSetExcalidrawContent(rawContent, filePathToLoad);
+          // 首先尝试从缓存加载
+          const cachedFile = await getCachedFile(selectedRepo, selectedBranch, filePathToLoad);
+          
+          if (cachedFile) {
+              console.log(`[DEBUG] App: Found cached content for ${filePathToLoad}, using cache`);
+              setOpenedFileContent(cachedFile.content);
+              setOpenedFileOriginalSha(cachedFile.originalSha || null);
+              
+              // 标记为已修改（因为有缓存说明用户做过修改）
+              setModifiedFiles(prev => {
+                  const newSet = new Set(prev);
+                  newSet.add(filePathToLoad);
+                  console.log(`[DEBUG] App: Marked cached file as modified: ${filePathToLoad}`);
+                  return newSet;
+              });
+          } else {
+              // 缓存中没有，从GitHub加载
+              console.log(`[DEBUG] App: No cache found for ${filePathToLoad}, loading from GitHub`);
+              const rawContent = await getGithubFileContent(t, currentPat, selectedRepo, filePathToLoad, selectedBranch); // Pass t
+              // Proceed to parse and set content (common logic)
+              parseAndSetExcalidrawContent(rawContent, filePathToLoad);
+              // 获取文件的SHA（这里需要额外的API调用来获取文件信息）
+              // 为了简化，我们暂时不获取SHA，在实际使用中可以通过文件树组件传递
+          }
+          
+          // 更新URL路由
+          if (!isInitializing && selectedRepo && selectedBranch) {
+            navigate(buildFileRoute(selectedRepo, selectedBranch, filePathToLoad));
+          }
       } catch (error: any) {
           console.error("Failed to load latest file content:", error);
           setFileLoadingError(error.message);
           setOpenedFilePath(null); // Clear opened file path on error
           setOpenedFileContent(null);
           setOpenedCommitSha(null);
+          setOpenedFileOriginalSha(null);
           // Keep selectedFilePath so user knows which file failed
       } finally {
           setIsFileLoading(false);
@@ -355,9 +458,19 @@ function App() {
               } finally {
                   setIsFileLoading(false);
               }
+              
+              // 更新URL路由（仅对.excalidraw文件）
+              if (!isInitializing && selectedRepo && selectedBranch && filePath.toLowerCase().endsWith('.excalidraw')) {
+                navigate(buildFileRoute(selectedRepo, selectedBranch, filePath));
+              }
           } else {
               // Load the latest version using API call
               loadLatestFileContent(filePath);
+              
+              // 更新URL路由（仅对.excalidraw文件）
+              if (!isInitializing && selectedRepo && selectedBranch && filePath.toLowerCase().endsWith('.excalidraw')) {
+                navigate(buildFileRoute(selectedRepo, selectedBranch, filePath));
+              }
           }
       }
   };
@@ -383,25 +496,48 @@ function App() {
   };
 
   const handlePromptDiscard = () => {
+      console.log("[DEBUG] App: handlePromptDiscard called");
       setShowSaveDialog(false);
+      
       if (openedFilePath) {
-          // Remove the modification flag
+          // Remove the modification flag (UI层面不再显示为已修改)
           setModifiedFiles(prev => {
               const newSet = new Set(prev);
               newSet.delete(openedFilePath);
-              console.log(`Discarded changes for: ${openedFilePath}`);
+              console.log(`[DEBUG] App: Discarded changes for: ${openedFilePath}`);
               return newSet;
           });
+          
+          // 注意：这里不清除缓存，因为用户只是放弃保存，但希望保留本地编辑状态
+          // 缓存会在下次打开文件时恢复用户的编辑内容
+          
+          // 重置ExcalidrawWrapper的原始状态为当前状态，防止重新标记为已修改
+          if (excalidrawWrapperRef.current) {
+              const currentContent = excalidrawWrapperRef.current.getSceneElements();
+              excalidrawWrapperRef.current.updateOriginalState(currentContent);
+              console.log("[DEBUG] App: Reset ExcalidrawWrapper original state after discard (keeping cache).");
+          }
       }
-      // Proceed to load the next file/version
+      
+      // 使用setTimeout确保状态更新完成后再处理下一个文件
       if (nextFilePathToOpen) {
-          try {
-              const { filePath: nextPath, content: nextContent, commitSha: nextSha } = JSON.parse(nextFilePathToOpen);
-              // Call handleFileNodeClick again, but this time it won't prompt because modifications are discarded
-              handleFileNodeClick(nextPath, nextContent, nextSha);
-          } catch (e) { console.error("Failed to parse next file data on discard:", e); }
+          console.log(`[DEBUG] App: Processing next file after discard: ${nextFilePathToOpen}`);
+          setTimeout(() => {
+              try {
+                  const { filePath: nextPath, content: nextContent, commitSha: nextSha } = JSON.parse(nextFilePathToOpen);
+                  console.log(`[DEBUG] App: About to open next file: ${nextPath}`);
+                  // Call handleFileNodeClick again, but this time it won't prompt because modifications are discarded
+                  handleFileNodeClick(nextPath, nextContent, nextSha);
+                  console.log(`[DEBUG] App: Successfully called handleFileNodeClick for: ${nextPath}`);
+              } catch (e) { 
+                  console.error("Failed to parse next file data on discard:", e); 
+              }
+          }, 0); // 使用setTimeout(0)确保在下一个事件循环中执行
+          // Clear the next file path after processing
+          setNextFilePathToOpen(null);
+      } else {
+          console.warn("[DEBUG] App: No next file to open after discard");
       }
-      setNextFilePathToOpen(null);
   };
 
   const handlePromptCancel = () => {
@@ -511,6 +647,30 @@ function App() {
       }
   }, [openedFilePath, openedCommitSha]); // Depend on both path and SHA to re-evaluate if needed, though logic uses path only for the Set key.
 
+  // 恢复缓存文件的处理函数
+  const handleRestoreCachedFile = (filePath: string, content: any) => {
+    console.log(`[DEBUG] App: Restoring cached file: ${filePath}`);
+    
+    // 设置文件状态
+    setSelectedFilePath(filePath);
+    setOpenedFilePath(filePath);
+    setOpenedFileContent(content);
+    setOpenedCommitSha(null); // 缓存的文件是基于最新版本的
+    setOpenedFileOriginalSha(null);
+    
+    // 标记为已修改
+    setModifiedFiles(prev => {
+      const newSet = new Set(prev);
+      newSet.add(filePath);
+      console.log(`[DEBUG] App: Marked restored file as modified: ${filePath}`);
+      return newSet;
+    });
+    
+    // 更新URL路由
+    if (!isInitializing && selectedRepo && selectedBranch) {
+      navigate(buildFileRoute(selectedRepo, selectedBranch, filePath));
+    }
+  };
 
   return (<> {/* Wrap in fragment */}
     <PanelGroup direction="horizontal" className="h-screen w-screen">
@@ -530,6 +690,14 @@ function App() {
                    : repos.map(repo => <SelectItem key={repo.id} value={repo.full_name}>{repo.full_name} {repo.private ? "🔒" : ""}</SelectItem>)}
                 </SelectContent>
               </Select>
+              <Button 
+                variant="outline" 
+                size="icon" 
+                title="缓存管理器"
+                onClick={() => setShowCacheManager(true)}
+              >
+                <Database className="h-4 w-4" />
+              </Button>
               <Dialog open={showSettingsDialog} onOpenChange={setShowSettingsDialog}>
                 <DialogTrigger asChild>
                   <Button variant="outline" size="icon" title={t('app.settingsButtonTitle')}><Settings className="h-4 w-4" /></Button>
@@ -648,6 +816,11 @@ function App() {
                 ref={excalidrawWrapperRef} // Assign ref
                 initialData={openedFileContent}
                 onChange={handleExcalidrawChange} // Pass the change handler
+                // 传递缓存相关的props
+                filePath={openedFilePath}
+                repoFullName={selectedRepo || undefined}
+                branch={selectedBranch || undefined}
+                originalSha={openedFileOriginalSha || undefined}
                 // Optionally pass commit SHA to display in UI (needs ExcalidrawWrapper modification)
                 // loadedCommitSha={openedCommitSha}
             />
@@ -688,6 +861,15 @@ function App() {
       onSaveSuccess={handleSaveSuccess} // Updated signature is compatible
       onSaveCancel={handleSaveCancel}
       onSaveError={handleSaveError}
+    />
+
+    {/* 缓存管理器对话框 */}
+    <CacheManager
+      isOpen={showCacheManager}
+      onOpenChange={setShowCacheManager}
+      currentRepo={selectedRepo || undefined}
+      currentBranch={selectedBranch || undefined}
+      onRestoreFile={handleRestoreCachedFile}
     />
 
   </>); // Wrap in fragment
