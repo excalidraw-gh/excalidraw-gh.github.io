@@ -102,5 +102,29 @@
     "unknownAuthor": "Unknown Author",
     "viewOnGithub": "View commit on GitHub",
     "openButton": "Open"
+  },
+  "batchSave": {
+    "buttonTitle": "Batch commit all unsaved files",
+    "buttonLabel": "Save All",
+    "dialogTitle": "Batch Save",
+    "dialogDescription": "Commit {{count}} unsaved files to GitHub in one commit.",
+    "commitMessagePlaceholder": "Enter batch commit message",
+    "confirmButton": "Commit All Files",
+    "errorTitle": "Commit failed",
+    "defaultMessage": "chore: batch save excalidraw files",
+    "missingDraftError": "Local draft for {{filePath}} is missing. Please reopen and retry."
+  },
+  "saveDialog": {
+    "title": "Save File",
+    "description": "Enter a commit message for saving \"{{fileName}}\".",
+    "commitMessageLabel": "Commit Message",
+    "commitMessagePlaceholder": "e.g., Update diagram with new flow",
+    "cancelButton": "Cancel",
+    "saveButton": "Save",
+    "savingButton": "Saving...",
+    "missingInfoError": "Missing required information (PAT, repo, branch, path, or commit message).",
+    "getContentError": "Could not retrieve latest content from editor.",
+    "unknownApiError": "An unknown error occurred during save.",
+    "errorTitle": "Save Failed"
   }
 }

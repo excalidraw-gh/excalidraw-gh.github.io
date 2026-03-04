@@ -115,5 +115,16 @@
     "getContentError": "无法从编辑器获取最新内容。",
     "unknownApiError": "保存过程中发生未知错误。",
     "errorTitle": "保存失败"
+  },
+  "batchSave": {
+    "buttonTitle": "批量提交全部未保存文件",
+    "buttonLabel": "全部保存",
+    "dialogTitle": "批量提交保存",
+    "dialogDescription": "将一次性提交 {{count}} 个未保存文件到 GitHub。",
+    "commitMessagePlaceholder": "输入批量提交信息",
+    "confirmButton": "提交全部文件",
+    "errorTitle": "提交失败",
+    "defaultMessage": "chore: 批量保存 excalidraw 文件",
+    "missingDraftError": "文件 {{filePath}} 的本地草稿不存在，请重新打开后再提交。"
   }
 }

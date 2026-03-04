@@ -20,7 +20,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Settings, Plus, GitBranch, Loader2 } from 'lucide-react';
+import { Settings, Plus, GitBranch, Loader2, Save } from 'lucide-react';
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 // import { Label } from "@/components/ui/label"; // Removed unused import
@@ -34,7 +34,68 @@ import {
   DialogTrigger,
   DialogClose,
 } from "@/components/ui/dialog";
+import { batchUpdateGithubFiles } from "./components/GithubFileTree";
+import { serializeAsJSON } from '@excalidraw/excalidraw';
 const LOCALSTORAGE_KEY_PREFERRED_REPO = 'preferredRepoIdentifier';
+const LOCALSTORAGE_KEY_DRAFTS = 'excalidrawDraftsV1';
+
+interface PersistedDraft {
+  repo: string;
+  branch: string;
+  filePath: string;
+  content: string;
+  updatedAt: number;
+}
+
+interface AppRouteState {
+  repo: string | null;
+  branch: string | null;
+  filePath: string | null;
+}
+
+const buildDraftKey = (repo: string, branch: string, filePath: string) => `${repo}::${branch}::${filePath}`;
+
+const readDraftMap = (): Record<string, PersistedDraft> => {
+  try {
+    const raw = localStorage.getItem(LOCALSTORAGE_KEY_DRAFTS);
+    if (!raw) return {};
+    return JSON.parse(raw);
+  } catch (error) {
+    console.error('Failed to read draft map:', error);
+    return {};
+  }
+};
+
+const writeDraftMap = (map: Record<string, PersistedDraft>) => {
+  try {
+    localStorage.setItem(LOCALSTORAGE_KEY_DRAFTS, JSON.stringify(map));
+  } catch (error) {
+    console.error('Failed to persist draft map:', error);
+  }
+};
+
+const getRouteState = (): AppRouteState => {
+  const hash = window.location.hash.replace(/^#/, '');
+  const segments = hash.split('/').filter(Boolean);
+  const route: AppRouteState = { repo: null, branch: null, filePath: null };
+  for (let i = 0; i < segments.length; i += 2) {
+    const key = segments[i];
+    const value = segments[i + 1] ? decodeURIComponent(segments[i + 1]) : null;
+    if (!value) continue;
+    if (key === 'repo') route.repo = value;
+    if (key === 'branch') route.branch = value;
+    if (key === 'file') route.filePath = value;
+  }
+  return route;
+};
+
+const buildRouteHash = ({ repo, branch, filePath }: AppRouteState) => {
+  const parts: string[] = [];
+  if (repo) parts.push('repo', encodeURIComponent(repo));
+  if (branch) parts.push('branch', encodeURIComponent(branch));
+  if (filePath) parts.push('file', encodeURIComponent(filePath));
+  return parts.length > 0 ? `#/${parts.join('/')}` : '';
+};
 
 
 // --- Interfaces and API Helpers ---
@@ -116,6 +177,11 @@ function App() {
   const [showCommitDialog, setShowCommitDialog] = useState(false);
   const [fileToSavePath, setFileToSavePath] = useState<string | null>(null);
   const [fileToOpenAfterCreate, setFileToOpenAfterCreate] = useState<string | null>(null); // State to trigger opening after creation
+  const [showBatchCommitDialog, setShowBatchCommitDialog] = useState(false);
+  const [batchCommitMessage, setBatchCommitMessage] = useState('');
+  const [isBatchSaving, setIsBatchSaving] = useState(false);
+  const [batchSaveError, setBatchSaveError] = useState<string | null>(null);
+  const initialRouteRef = useRef<AppRouteState>(getRouteState());
 
    useEffect(() => { /* Load PAT */
         async function fetchPat() {
@@ -150,13 +216,13 @@ function App() {
 
                 let repoToSelect: string | null = null;
                 if (fetchedRepos.length > 0) {
-                    // Try to select the preferred repo if it exists in the fetched list
-                    if (preferredRepo && fetchedRepos.some(repo => repo.full_name === preferredRepo)) {
+                    const routeRepo = initialRouteRef.current.repo;
+                    if (routeRepo && fetchedRepos.some(repo => repo.full_name === routeRepo)) {
+                        repoToSelect = routeRepo;
+                    } else if (preferredRepo && fetchedRepos.some(repo => repo.full_name === preferredRepo)) {
                         repoToSelect = preferredRepo;
                     } else {
-                        // Fallback to the first repo if preferred is invalid or not found
                         repoToSelect = fetchedRepos[0].full_name;
-                        // Clear invalid preferred repo from localStorage
                         if (preferredRepo) {
                             try {
                                 localStorage.removeItem(LOCALSTORAGE_KEY_PREFERRED_REPO);
@@ -180,12 +246,30 @@ function App() {
         async function loadBranches() {
             if (!currentPat || !selectedRepo) return;
             setIsLoadingBranches(true); setRepoBranchError(null); setSelectedBranch(null); setBranches([]);
-            try { const fetchedBranches = await fetchRepoBranches(t, currentPat, selectedRepo); setBranches(fetchedBranches); if (fetchedBranches.length > 0) { const main = fetchedBranches.find(b => b.name === 'main'); const master = fetchedBranches.find(b => b.name === 'master'); if (main) setSelectedBranch(main.name); else if (master) setSelectedBranch(master.name); else setSelectedBranch(fetchedBranches[0].name); } else { setSelectedBranch(null); } } // Pass t
+            try { const fetchedBranches = await fetchRepoBranches(t, currentPat, selectedRepo); setBranches(fetchedBranches); if (fetchedBranches.length > 0) { const routeBranch = initialRouteRef.current.branch; const branchFromRoute = routeBranch ? fetchedBranches.find(b => b.name === routeBranch) : null; const main = fetchedBranches.find(b => b.name === 'main'); const master = fetchedBranches.find(b => b.name === 'master'); if (branchFromRoute) setSelectedBranch(branchFromRoute.name); else if (main) setSelectedBranch(main.name); else if (master) setSelectedBranch(master.name); else setSelectedBranch(fetchedBranches[0].name); } else { setSelectedBranch(null); } } // Pass t
             catch (err: any) { setRepoBranchError(err.message || t('app.loadingErrorTitle')); }
             finally { setIsLoadingBranches(false); }
         }
         loadBranches();
     }, [currentPat, selectedRepo, t]);
+
+   useEffect(() => {
+      const routeHash = buildRouteHash({ repo: selectedRepo, branch: selectedBranch, filePath: selectedFilePath });
+      if (window.location.hash !== routeHash) {
+        window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}${routeHash}`);
+      }
+   }, [selectedRepo, selectedBranch, selectedFilePath]);
+
+   useEffect(() => {
+      if (!selectedRepo || !selectedBranch) {
+        setModifiedFiles(new Set());
+        return;
+      }
+      const drafts = Object.values(readDraftMap())
+        .filter((draft) => draft.repo === selectedRepo && draft.branch === selectedBranch)
+        .map((draft) => draft.filePath);
+      setModifiedFiles(new Set(drafts));
+   }, [selectedRepo, selectedBranch]);
 
    const handlePatSaved = (newPat: string) => { setCurrentPat(newPat); setShowSettingsDialog(false); };
    const handlePatCleared = () => { setCurrentPat(null); setRepos([]); setSelectedRepo(null); setBranches([]); setSelectedBranch(null); setRepoBranchError(null); setShowSettingsDialog(false); };
@@ -252,8 +336,9 @@ function App() {
 
       try {
           const rawContent = await getGithubFileContent(t, currentPat, selectedRepo, filePathToLoad, selectedBranch); // Pass t
-          // Proceed to parse and set content (common logic)
-          parseAndSetExcalidrawContent(rawContent, filePathToLoad);
+          const draft = readDraftMap()[buildDraftKey(selectedRepo, selectedBranch, filePathToLoad)];
+          const contentToLoad = draft?.content ?? rawContent;
+          parseAndSetExcalidrawContent(contentToLoad, filePathToLoad, Boolean(draft));
       } catch (error: any) {
           console.error("Failed to load latest file content:", error);
           setFileLoadingError(error.message);
@@ -267,7 +352,7 @@ function App() {
   };
 
   // Helper function to parse and set Excalidraw content (used by both latest and version loading)
-  const parseAndSetExcalidrawContent = (rawContent: string, filePath: string) => {
+  const parseAndSetExcalidrawContent = (rawContent: string, filePath: string, markAsModified = false) => {
       try {
           const parsedData = JSON.parse(rawContent);
           if (parsedData && (Array.isArray(parsedData.elements) || typeof parsedData.elements === 'object')) { // Allow empty object for elements initially
@@ -278,7 +363,7 @@ function App() {
               // Successfully loaded, ensure it's not marked as modified initially
               setModifiedFiles(prev => {
                   const newSet = new Set(prev);
-                  newSet.delete(filePath); // Use the actual file path for modification tracking
+                  if (markAsModified) newSet.add(filePath); else newSet.delete(filePath); // Use the actual file path for modification tracking
                   return newSet;
               });
           } else {
@@ -287,7 +372,7 @@ function App() {
                   setOpenedFileContent({ elements: [], appState: parsedData.appState });
                    setModifiedFiles(prev => {
                       const newSet = new Set(prev);
-                      newSet.delete(filePath);
+                      if (markAsModified) newSet.add(filePath); else newSet.delete(filePath);
                       return newSet;
                   });
               } else {
@@ -362,6 +447,13 @@ function App() {
       }
   };
 
+  useEffect(() => {
+      const routeFilePath = initialRouteRef.current.filePath;
+      if (!routeFilePath || !selectedRepo || !selectedBranch || openedFilePath || isFileLoading) return;
+      handleFileNodeClick(routeFilePath);
+      initialRouteRef.current.filePath = null;
+  }, [selectedRepo, selectedBranch, openedFilePath, isFileLoading, handleFileNodeClick]);
+
   // --- Handler to trigger the commit dialog ---
   const handleSaveRequest = (filePathToSave: string) => {
       console.log(`%c[DEBUG] App: handleSaveRequest TRIGGERED for: ${filePathToSave}`, 'color: blue; font-weight: bold;');
@@ -423,6 +515,11 @@ function App() {
           console.log(`[DEBUG] App: Removed modification flag for: ${savedFilePath}`);
           return newSet;
       });
+      if (selectedRepo && selectedBranch) {
+          const map = readDraftMap();
+          delete map[buildDraftKey(selectedRepo, selectedBranch, savedFilePath)];
+          writeDraftMap(map);
+      }
       // Update ExcalidrawWrapper's baseline to prevent immediate re-flagging as modified
       const latestContent = getLatestExcalidrawContent(); // Get current content
       if (latestContent && excalidrawWrapperRef.current) {
@@ -466,6 +563,53 @@ function App() {
       // setAppLevelError(`Failed to save file: ${error.message}`);
   };
 
+  const openBatchCommitDialog = () => {
+      setBatchCommitMessage(t('batchSave.defaultMessage', 'chore: batch save excalidraw files'));
+      setBatchSaveError(null);
+      setShowBatchCommitDialog(true);
+  };
+
+  const handleBatchCommit = async () => {
+      if (!currentPat || !selectedRepo || !selectedBranch) return;
+      if (modifiedFiles.size === 0) return;
+      const message = batchCommitMessage.trim();
+      if (!message) return;
+
+      setIsBatchSaving(true);
+      setBatchSaveError(null);
+      try {
+          const map = readDraftMap();
+          const filesToCommit = Array.from(modifiedFiles).map((filePath) => {
+              const draft = map[buildDraftKey(selectedRepo, selectedBranch, filePath)];
+              if (!draft) {
+                throw new Error(t('batchSave.missingDraftError', { filePath }));
+              }
+              return { path: filePath, content: draft.content };
+          });
+
+          await batchUpdateGithubFiles(currentPat, selectedRepo, selectedBranch, filesToCommit, message);
+
+          filesToCommit.forEach((file) => {
+              delete map[buildDraftKey(selectedRepo, selectedBranch, file.path)];
+          });
+          writeDraftMap(map);
+
+          setModifiedFiles(new Set());
+          if (openedFilePath && excalidrawWrapperRef.current) {
+              const latestContent = getLatestExcalidrawContent();
+              if (latestContent) {
+                  excalidrawWrapperRef.current.updateOriginalState(latestContent.elements);
+              }
+          }
+          browserRef.current?.refreshTree();
+          setShowBatchCommitDialog(false);
+      } catch (error: any) {
+          setBatchSaveError(error.message || t('app.unknownError'));
+      } finally {
+          setIsBatchSaving(false);
+      }
+  };
+
   // --- Function to get latest content from Excalidraw ---
   const getLatestExcalidrawContent = useCallback(() => {
       if (excalidrawWrapperRef.current) {
@@ -489,6 +633,22 @@ function App() {
       // because saving always updates the latest version.
       console.log(`[DEBUG] App: handleExcalidrawChange called for ${openedFilePath} (version: ${openedCommitSha ?? 'latest'}) with isModified: ${isModified}`);
       if (openedFilePath) {
+          if (selectedRepo && selectedBranch) {
+              const map = readDraftMap();
+              const key = buildDraftKey(selectedRepo, selectedBranch, openedFilePath);
+              if (isModified) {
+                  map[key] = {
+                    repo: selectedRepo,
+                    branch: selectedBranch,
+                    filePath: openedFilePath,
+                    content: serializeAsJSON(_elements, _appState, _files || {}, 'database'),
+                    updatedAt: Date.now(),
+                  };
+              } else {
+                  delete map[key];
+              }
+              writeDraftMap(map);
+          }
           setModifiedFiles(prev => {
               const newSet = new Set(prev);
               const currentlyMarked = newSet.has(openedFilePath); // Check based on path only
@@ -509,7 +669,7 @@ function App() {
               return prev; // Return previous state if no change in modification status
           });
       }
-  }, [openedFilePath, openedCommitSha]); // Depend on both path and SHA to re-evaluate if needed, though logic uses path only for the Set key.
+  }, [openedFilePath, openedCommitSha, selectedRepo, selectedBranch]); // Depend on both path and SHA to re-evaluate if needed, though logic uses path only for the Set key.
 
 
   return (<> {/* Wrap in fragment */}
@@ -589,6 +749,15 @@ function App() {
                     </form>
               </DialogContent>
             </Dialog>
+            <Button
+              variant="outline"
+              disabled={!selectedBranch || modifiedFiles.size === 0 || isBatchSaving}
+              onClick={openBatchCommitDialog}
+              title={t('batchSave.buttonTitle', '批量提交全部未保存文件')}
+            >
+              {isBatchSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
+              {t('batchSave.buttonLabel', '全部保存')}
+            </Button>
           </div>
         )}
         {/* Repo/Branch Loading Errors */}
@@ -672,6 +841,38 @@ function App() {
           <Button variant="outline" onClick={handlePromptCancel}>{t('savePrompt.cancelButton', 'Cancel')}</Button> {/* Added default text */}
           <Button variant="destructive" onClick={handlePromptDiscard}>{t('savePrompt.discardButton', 'Discard')}</Button> {/* Added default text */}
           <Button onClick={handlePromptSave}>{t('savePrompt.saveButton', 'Save')}</Button> {/* Added default text */}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <Dialog open={showBatchCommitDialog} onOpenChange={(open) => { if (!isBatchSaving) setShowBatchCommitDialog(open); }}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{t('batchSave.dialogTitle', '批量提交保存')}</DialogTitle>
+          <DialogDescription>
+            {t('batchSave.dialogDescription', { count: modifiedFiles.size })}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4 py-2"> 
+          <Input
+            value={batchCommitMessage}
+            onChange={(e) => setBatchCommitMessage(e.target.value)}
+            disabled={isBatchSaving}
+            placeholder={t('batchSave.commitMessagePlaceholder', '输入提交信息')}
+          />
+          {batchSaveError && (
+            <Alert variant="destructive">
+              <AlertTitle>{t('batchSave.errorTitle', '提交失败')}</AlertTitle>
+              <AlertDescription>{batchSaveError}</AlertDescription>
+            </Alert>
+          )}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setShowBatchCommitDialog(false)} disabled={isBatchSaving}>{t('saveDialog.cancelButton', 'Cancel')}</Button>
+          <Button onClick={handleBatchCommit} disabled={isBatchSaving || !batchCommitMessage.trim() || modifiedFiles.size === 0}>
+            {isBatchSaving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            {t('batchSave.confirmButton', '提交全部文件')}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
