@@ -13,18 +13,19 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"; // Removed DialogClose as it's handled by onOpenChange
-import { getFileSha, updateGithubFile } from './GithubFileTree';
+import { commitGithubFiles, getFileSha, updateGithubFile } from './GithubFileTree';
 import { serializeAsJSON } from '@excalidraw/excalidraw'; // Import Excalidraw's serialization utility
+import type { ExcalidrawSceneData } from '../lib/excalidrawScene';
 
 interface SaveFileDialogProps {
   isOpen: boolean;
   onOpenChange: (isOpen: boolean) => void;
-  filePathToSave: string | null;
+  filePathsToSave: string[];
   pat: string | null; // PAT might be null initially
   repoFullName: string | null;
   branchName: string | null;
-  getLatestContent: () => { elements: readonly any[]; appState: any } | null;
-  onSaveSuccess: (filePath: string, newSha: string) => void; // Add newSha parameter
+  getLatestContent: (filePath: string | null) => Promise<ExcalidrawSceneData | null>;
+  onSaveSuccess: (filePaths: string[], newShasByPath: Record<string, string>) => void;
   onSaveCancel: () => void;
   onSaveError: (error: Error) => void;
 }
@@ -32,7 +33,7 @@ interface SaveFileDialogProps {
 export function SaveFileDialog({
   isOpen,
   onOpenChange,
-  filePathToSave,
+  filePathsToSave,
   pat,
   repoFullName,
   branchName,
@@ -45,15 +46,23 @@ export function SaveFileDialog({
   const [commitMessage, setCommitMessage] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const targetFilePaths = filePathsToSave.filter((filePath): filePath is string => Boolean(filePath));
+  const targetFilePathsKey = targetFilePaths.join('\n');
+  const isBatchSave = targetFilePaths.length > 1;
+  const primaryFilePath = targetFilePaths[0] ?? null;
 
   // Reset state when dialog opens with a new file
   useEffect(() => {
-    if (isOpen && filePathToSave) {
-      setCommitMessage(`feat: update ${filePathToSave.split('/').pop()}`); // Default commit message
+    if (isOpen && targetFilePaths.length > 0) {
+      setCommitMessage(
+        targetFilePaths.length > 1
+          ? `feat: update ${targetFilePaths.length} excalidraw files`
+          : `feat: update ${targetFilePaths[0].split('/').pop()}`,
+      );
       setIsSaving(false);
       setSaveError(null);
     }
-  }, [isOpen, filePathToSave]);
+  }, [isOpen, targetFilePathsKey]);
 
   const handleSave = async () => {
     // Prevent double execution if already saving
@@ -61,62 +70,88 @@ export function SaveFileDialog({
         console.warn('[DEBUG] SaveFileDialog: handleSave called while already saving. Ignoring.');
         return;
     }
-    console.log(`%c[DEBUG] SaveFileDialog: handleSave CALLED for: ${filePathToSave}`, 'color: orange; font-weight: bold;');
+    console.log(`%c[DEBUG] SaveFileDialog: handleSave CALLED for: ${targetFilePaths.join(', ')}`, 'color: orange; font-weight: bold;');
 
-    if (!pat || !repoFullName || !branchName || !filePathToSave || !commitMessage.trim()) {
+    if (!pat || !repoFullName || !branchName || targetFilePaths.length === 0 || !commitMessage.trim()) {
       setSaveError(t('saveDialog.missingInfoError', 'Missing required information (PAT, repo, branch, path, or commit message).'));
       console.error('[DEBUG] SaveFileDialog: Missing required info.');
       return;
     }
 
-    const latestContent = getLatestContent();
-    if (!latestContent) {
-      setSaveError(t('saveDialog.getContentError', 'Could not retrieve latest content from editor.'));
-      console.error('[DEBUG] SaveFileDialog: getLatestContent returned null.');
+    const latestContents = await Promise.all(
+      targetFilePaths.map(async (filePath) => ({
+        filePath,
+        content: await getLatestContent(filePath),
+      })),
+    );
+
+    const filesMissingContent = latestContents
+      .filter(({ content }) => !content)
+      .map(({ filePath }) => filePath);
+
+    if (filesMissingContent.length > 0) {
+      setSaveError(
+        t('saveDialog.getContentErrorForFiles', {
+          defaultValue: 'Could not retrieve the latest content for: {{fileNames}}',
+          fileNames: filesMissingContent.join(', '),
+        }),
+      );
+      console.error('[DEBUG] SaveFileDialog: getLatestContent returned null for files:', filesMissingContent);
       return;
     }
+
+    const serializedContents = latestContents.map(({ filePath, content }) => ({
+      filePath,
+      contentToSave: serializeAsJSON(
+        content!.elements,
+        content!.appState,
+        content!.files ?? {},
+        'database',
+      ),
+    }));
 
     console.log('[DEBUG] SaveFileDialog: Setting isSaving to true.');
     setIsSaving(true);
     setSaveError(null);
 
     try {
-      // 1. Get current SHA of the file
-      console.log('[DEBUG] SaveFileDialog: Attempting to get current SHA...');
-      const currentSha = await getFileSha(pat, repoFullName, filePathToSave, branchName);
-      console.log(`[DEBUG] SaveFileDialog: Got SHA: ${currentSha}`);
+      if (serializedContents.length === 1) {
+        const [{ filePath, contentToSave }] = serializedContents;
+        console.log('[DEBUG] SaveFileDialog: Attempting to get current SHA...');
+        const currentSha = await getFileSha(pat, repoFullName, filePath, branchName);
+        console.log(`[DEBUG] SaveFileDialog: Got SHA: ${currentSha}`);
+        console.log('[DEBUG] SaveFileDialog: Serialized content string (start):', contentToSave.substring(0, 100));
+        console.log(`[DEBUG] SaveFileDialog: Calling updateGithubFile for ${filePath} with SHA ${currentSha ?? 'null (create)'}...`);
 
-      // --- DEBUG LOG ---
-      console.log('[DEBUG] SaveFileDialog: Preparing to save. Latest content retrieved:');
-      console.log(`[DEBUG]   - Elements count: ${latestContent.elements?.length}`);
-      console.log(`[DEBUG]   - AppState keys: ${Object.keys(latestContent.appState || {}).join(', ')}`);
-      console.log(`[DEBUG]   - AppState.collaborators type: ${typeof latestContent.appState?.collaborators}`);
-      console.log(`[DEBUG]   - AppState.collaborators value:`, latestContent.appState?.collaborators);
-      // --- END DEBUG LOG ---
+        const updateResult = await updateGithubFile(
+          pat,
+          repoFullName,
+          filePath,
+          contentToSave,
+          branchName,
+          commitMessage.trim(),
+          currentSha ?? undefined,
+        );
 
-      // 2. Prepare content string using Excalidraw's utility
-      const contentToSave = serializeAsJSON(
-          latestContent.elements,
-          latestContent.appState,
-          {}, // files - assuming none for now
-          'database' // type - 'database' is suitable for backend/storage
-      );
-      console.log('[DEBUG] SaveFileDialog: Serialized content string (start):', contentToSave.substring(0, 100));
+        console.log(`%c[DEBUG] SaveFileDialog: updateGithubFile successful. New SHA: ${updateResult.sha}`, 'color: green;');
+        onSaveSuccess([filePath], { [filePath]: updateResult.sha });
+      } else {
+        console.log(`[DEBUG] SaveFileDialog: Calling commitGithubFiles for ${serializedContents.length} files...`);
+        const updateResult = await commitGithubFiles(
+          pat,
+          repoFullName,
+          branchName,
+          serializedContents.map(({ filePath, contentToSave }) => ({
+            path: filePath,
+            content: contentToSave,
+          })),
+          commitMessage.trim(),
+        );
 
-      // 3. Call update API and capture the result
-      console.log(`[DEBUG] SaveFileDialog: Calling updateGithubFile for ${filePathToSave} with SHA ${currentSha ?? 'null (create)'}...`);
-      const updateResult = await updateGithubFile(
-        pat,
-        repoFullName,
-        filePathToSave,
-        contentToSave, // Use the serialized string
-        branchName,
-        commitMessage.trim(),
-        currentSha ?? undefined // Pass SHA if it exists
-      );
+        console.log(`%c[DEBUG] SaveFileDialog: commitGithubFiles successful. Commit SHA: ${updateResult.commitSha}`, 'color: green;');
+        onSaveSuccess(targetFilePaths, updateResult.fileShas);
+      }
 
-      console.log(`%c[DEBUG] SaveFileDialog: updateGithubFile successful. New SHA: ${updateResult.sha}`, 'color: green;');
-      onSaveSuccess(filePathToSave, updateResult.sha); // Notify parent with new SHA
       onOpenChange(false); // Close dialog
 
     } catch (error: any) {
@@ -152,10 +187,31 @@ export function SaveFileDialog({
         <DialogHeader>
           <DialogTitle>{t('saveDialog.title', 'Save File')}</DialogTitle>
           <DialogDescription>
-            {t('saveDialog.description', 'Enter a commit message for saving "{{fileName}}".', { fileName: filePathToSave || '...' })}
+            {isBatchSave
+              ? t('saveDialog.descriptionBatch', 'Enter one commit message to save {{count}} files.', { count: targetFilePaths.length })
+              : t('saveDialog.description', 'Enter a commit message for saving "{{fileName}}".', { fileName: primaryFilePath || '...' })}
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4 py-4">
+          {isBatchSave && (
+            <div className="space-y-2">
+              <Label>{t('saveDialog.filesLabel', 'Files')}</Label>
+              <div className="max-h-32 overflow-y-auto rounded-md border p-3 text-sm text-muted-foreground">
+                {targetFilePaths.slice(0, 8).map((filePath) => (
+                  <div key={filePath} className="truncate">
+                    {filePath}
+                  </div>
+                ))}
+                {targetFilePaths.length > 8 && (
+                  <div className="mt-2 text-xs">
+                    {t('saveDialog.moreFilesLabel', 'And {{count}} more files...', {
+                      count: targetFilePaths.length - 8,
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
           <div className="space-y-2">
             <Label htmlFor="commit-message">{t('saveDialog.commitMessageLabel', 'Commit Message')}</Label>
             <Input
@@ -179,7 +235,11 @@ export function SaveFileDialog({
           </Button>
           <Button onClick={handleSave} disabled={isSaving || !commitMessage.trim()}>
             {isSaving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            {isSaving ? t('saveDialog.savingButton', 'Saving...') : t('saveDialog.saveButton', 'Save')}
+            {isSaving
+              ? t('saveDialog.savingButton', 'Saving...')
+              : isBatchSave
+                ? t('saveDialog.saveAllButton', 'Save All')
+                : t('saveDialog.saveButton', 'Save')}
           </Button>
         </DialogFooter>
       </DialogContent>

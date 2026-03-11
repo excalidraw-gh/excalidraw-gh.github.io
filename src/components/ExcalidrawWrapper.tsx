@@ -6,14 +6,13 @@ import "@excalidraw/excalidraw/index.css"; // Import Excalidraw CSS
 // Removed CSS import as it's linked in index.html
 import { useTranslation } from 'react-i18next';
 import { saveCachedFile, deleteCachedFile, CachedFileData } from '../lib/db';
+import { createSceneSnapshot, ExcalidrawSceneData, normalizeSceneData } from '../lib/excalidrawScene';
+
+const MISSING_BASELINE_PREFIX = '__missing_remote_baseline__:';
 
 // Define props using inline types or any for now
 interface ExcalidrawWrapperProps {
-  initialData: {
-    elements: readonly any[]; // Use any for elements for now
-    appState?: any | null;     // Use any for appState for now
-    files?: any;
-  } | null;
+  initialData: ExcalidrawSceneData | null;
   // Update onChange prop type to include isModified
   onChange?: (elements: readonly any[], appState: any, files: any, isModified: boolean) => void;
   // 添加缓存相关的props
@@ -21,21 +20,22 @@ interface ExcalidrawWrapperProps {
   repoFullName?: string;
   branch?: string;
   originalSha?: string;
+  baselineSnapshot?: string | null;
 }
 
 // Define ref type using any for now
 export interface ExcalidrawWrapperRef {
   getSceneElements: () => readonly any[];
   getAppState: () => any;
-  updateOriginalState: (elements: readonly any[]) => void; // Add method to update baseline
+  getFiles: () => Record<string, any>;
 }
 
 export const ExcalidrawWrapper = React.forwardRef<ExcalidrawWrapperRef, ExcalidrawWrapperProps>(
-  ({ initialData, onChange, filePath, repoFullName, branch, originalSha }, ref) => {
+  ({ initialData, onChange, filePath, repoFullName, branch, originalSha, baselineSnapshot }, ref) => {
     const { i18n } = useTranslation();
     // Use any for the API state type
     const [excalidrawAPI, setExcalidrawAPI] = useState<any | null>(null);
-    const [originalElementsString, setOriginalElementsString] = useState<string>('');
+    const lastModifiedRef = React.useRef<boolean | null>(null);
 
     // Callback ref to get the API instance
     const excalidrawRefCallback = useCallback((api: any | null) => { // Use any for api type
@@ -52,138 +52,93 @@ export const ExcalidrawWrapper = React.forwardRef<ExcalidrawWrapperRef, Excalidr
       getAppState: () => {
         return excalidrawAPI?.getAppState() || {}; // Return empty object as default
       },
-      updateOriginalState: (elements: readonly any[]) => {
-        console.log('[DEBUG] ExcalidrawWrapper: Updating original elements string after save.');
-        const newBaseline = JSON.stringify(elements);
-        console.log(`[DEBUG]   - New Baseline String (start): ${newBaseline.substring(0, 80)}...`);
-        setOriginalElementsString(newBaseline);
+      getFiles: () => {
+        return excalidrawAPI?.getFiles?.() || {};
       }
     }));
 
     console.log("Rendering ExcalidrawWrapper with initialData:", initialData);
 
-    // Store initial elements as string when component mounts or initialData changes
+    // Push loaded scene into the editor whenever the opened file changes.
     useEffect(() => {
         if (excalidrawAPI && initialData?.elements) {
             console.log("[DEBUG] ExcalidrawWrapper: Updating scene with initialData.");
-            // Don't set original string here yet
-            // setOriginalElementsString(JSON.stringify(initialData.elements)); // REMOVED
-
             const sceneData = {
                 elements: initialData.elements,
                 appState: initialData.appState ?? {},
                 files: initialData.files
             };
             excalidrawAPI.updateScene(sceneData);
-
-            // Set the baseline AFTER Excalidraw processes the update
-            setTimeout(() => {
-                if (excalidrawAPI) { // Check API still exists
-                    const currentElements = excalidrawAPI.getSceneElements();
-                    const baselineString = JSON.stringify(currentElements);
-                    console.log(`[DEBUG] ExcalidrawWrapper: Setting baseline originalElementsString after updateScene (start): ${baselineString.substring(0, 80)}...`);
-                    setOriginalElementsString(baselineString);
-                }
-            }, 0); // Delay of 0ms pushes execution after current stack
-        } else if (!initialData) {
-            // Clear original string if initialData is null (e.g., file closed)
-            setOriginalElementsString('');
         }
     }, [initialData, excalidrawAPI]); // Keep dependencies
 
-    // 保存到本地缓存的防抖函数
-    const debouncedSaveToCache = useCallback(
-        debounce(async (elements: readonly any[], appState: any, files: any) => {
+    useEffect(() => {
+        lastModifiedRef.current = null;
+    }, [filePath, baselineSnapshot]);
+
+    // 仅对 dirty 文件持久化 draft；恢复为 baseline 时删除缓存。
+    const debouncedSyncCache = useCallback(
+        debounce(async (scene: ExcalidrawSceneData, isModified: boolean, baseSnapshot?: string | null) => {
             if (!filePath || !repoFullName || !branch) {
-                console.log('[DEBUG] ExcalidrawWrapper: Skipping cache save, missing file info');
+                console.log('[DEBUG] ExcalidrawWrapper: Skipping cache sync, missing file info');
                 return;
             }
 
             try {
+                if (!isModified) {
+                    await deleteCachedFile(repoFullName, branch, filePath);
+                    console.log(`[DEBUG] ExcalidrawWrapper: Removed draft cache for clean file: ${filePath}`);
+                    return;
+                }
+
                 const cacheData: CachedFileData = {
                     filePath,
                     repoFullName,
                     branch,
-                    content: {
-                        elements,
-                        appState,
-                        files
-                    },
+                    content: normalizeSceneData(scene),
                     lastModified: Date.now(),
+                    baseSnapshot: baseSnapshot?.startsWith(MISSING_BASELINE_PREFIX) ? undefined : (baseSnapshot ?? undefined),
                     originalSha
                 };
                 
                 await saveCachedFile(cacheData);
-                console.log(`[DEBUG] ExcalidrawWrapper: Saved to cache: ${filePath}`);
+                console.log(`[DEBUG] ExcalidrawWrapper: Saved dirty draft to cache: ${filePath}`);
             } catch (error) {
-                console.error('[DEBUG] ExcalidrawWrapper: Failed to save to cache:', error);
+                console.error('[DEBUG] ExcalidrawWrapper: Failed to sync cache:', error);
             }
         }, 1000), // 1秒防抖
         [filePath, repoFullName, branch, originalSha]
     );
 
-    // Debounced function to perform comparison and notify parent
-    const debouncedCompareAndNotify = useCallback(
-        debounce((elements: readonly any[], appState: any, files: any) => {
-            // Ensure originalElementsString has been set before comparing
-            if (originalElementsString === '') {
-                console.log('[DEBUG] ExcalidrawWrapper: Skipping comparison, original string not set yet.');
-                return; // Don't compare if baseline isn't ready
-            }
-            const currentString = JSON.stringify(elements);
-            const isModified = currentString !== originalElementsString;
-            console.log('[DEBUG] ExcalidrawWrapper: debouncedCompareAndNotify');
-            console.log(`[DEBUG]   - Original Elements String (start): ${originalElementsString.substring(0, 80)}...`);
-            console.log(`[DEBUG]   - Current Elements String (start):  ${currentString.substring(0, 80)}...`);
-            console.log(`[DEBUG]   - Strings Equal: ${currentString === originalElementsString}`);
-            console.log(`[DEBUG]   - Calculated isModified: ${isModified}`);
-            
-            // 保存到本地缓存（无论是否修改都保存，以便恢复状态）
-            debouncedSaveToCache(elements, appState, files);
-            
-            // Call the actual onChange prop passed from App.tsx
-            if (onChange) {
-                onChange(elements, appState, files, isModified);
-            }
-        }, 500), // Debounce delay 500ms
-        [originalElementsString, onChange, debouncedSaveToCache] // Dependencies
-    );
+    useEffect(() => {
+        debouncedSyncCache.cancel();
+    }, [baselineSnapshot, debouncedSyncCache]);
 
     // Raw onChange handler from Excalidraw
     const handleRawExcalidrawChange = (elements: readonly any[], appState: any, files: any) => {
-        // Trigger the debounced comparison and notification
-        debouncedCompareAndNotify(elements, appState, files);
-    };
+        const scene = normalizeSceneData({ elements, appState, files });
+        const currentSnapshot = createSceneSnapshot(scene);
+        const isModified = baselineSnapshot == null ? false : currentSnapshot !== baselineSnapshot;
 
-    // 当文件保存成功后，清除对应的缓存
-    const clearCacheOnSave = useCallback(async () => {
-        if (filePath && repoFullName && branch) {
-            try {
-                await deleteCachedFile(repoFullName, branch, filePath);
-                console.log(`[DEBUG] ExcalidrawWrapper: Cleared cache for saved file: ${filePath}`);
-            } catch (error) {
-                console.error('[DEBUG] ExcalidrawWrapper: Failed to clear cache:', error);
+        // Persist locally on every edit (debounced) so file switch won't lose pending changes.
+        debouncedSyncCache(scene, isModified, baselineSnapshot);
+
+        if (lastModifiedRef.current !== isModified) {
+            console.log(`[DEBUG] ExcalidrawWrapper: isModified changed for ${filePath}: ${isModified}`);
+            lastModifiedRef.current = isModified;
+            if (onChange) {
+                onChange(elements, appState, files, isModified);
             }
         }
-    }, [filePath, repoFullName, branch]);
+    };
 
-    // 暴露清除缓存的方法给父组件
-    React.useImperativeHandle(ref, () => ({
-      getSceneElements: () => {
-        return excalidrawAPI?.getSceneElements() || [];
-      },
-      getAppState: () => {
-        return excalidrawAPI?.getAppState() || {}; // Return empty object as default
-      },
-      updateOriginalState: (elements: readonly any[]) => {
-        console.log('[DEBUG] ExcalidrawWrapper: Updating original elements string after save.');
-        const newBaseline = JSON.stringify(elements);
-        console.log(`[DEBUG]   - New Baseline String (start): ${newBaseline.substring(0, 80)}...`);
-        setOriginalElementsString(newBaseline);
-        // 保存成功后清除缓存
-        clearCacheOnSave();
-      }
-    }), [clearCacheOnSave]);
+    // Flush pending cache writes on file switch/unmount to keep unsaved content recoverable.
+    useEffect(() => {
+        return () => {
+            debouncedSyncCache.flush();
+            debouncedSyncCache.cancel();
+        };
+    }, [debouncedSyncCache]);
 
     // Log the props being passed down to the actual Excalidraw component
     console.log('[DEBUG] Props passed to Excalidraw component:', { initialData, onChange: handleRawExcalidrawChange, langCode: i18n.language.startsWith('zh') ? 'zh-CN' : 'en' });

@@ -191,7 +191,18 @@ async function getCommit(pat: string, repoFullName: string, commitSha: string): 
 // Removed unused getTree function (lines 192-197 deleted)
 
 // Create a new Tree
-async function createTree(pat: string, repoFullName: string, baseTreeSha: string, treeNodes: Array<{ path: string; mode: string; type: string; sha: string | null }>): Promise<{ sha: string }> {
+async function createTree(
+  pat: string,
+  repoFullName: string,
+  baseTreeSha: string,
+  treeNodes: Array<{
+    path: string;
+    mode: string;
+    type: string;
+    sha?: string | null;
+    content?: string;
+  }>
+): Promise<{ sha: string }> {
     const url = `${GITHUB_API_BASE}/repos/${repoFullName}/git/trees`;
     const response = await fetch(url, { method: 'POST', headers: { Authorization: `token ${pat}`, Accept: "application/vnd.github.v3+json", 'Content-Type': 'application/json' }, body: JSON.stringify({ base_tree: baseTreeSha, tree: treeNodes }) });
     if (!response.ok) { const errorData = await response.json().catch(() => ({})); throw new Error(`创建 Tree 失败: ${response.status} - ${errorData.message}`); }
@@ -252,6 +263,57 @@ export async function updateGithubFile( // Add export
     console.log(`File ${path} ${sha ? 'updated' : 'created'} successfully.`);
     const result = await response.json();
     return { sha: result.content.sha }; // Return only the new SHA
+}
+
+export async function commitGithubFiles(
+  pat: string,
+  repoFullName: string,
+  branch: string,
+  files: Array<{ path: string; content: string }>,
+  commitMessage: string
+): Promise<{ commitSha: string; fileShas: Record<string, string> }> {
+  if (files.length === 0) {
+    throw new Error('没有可提交的文件。');
+  }
+
+  const refData = await getRef(pat, repoFullName, branch);
+  const latestCommitSha = refData.object.sha;
+  const commitData = await getCommit(pat, repoFullName, latestCommitSha);
+  const baseTreeSha = commitData.tree.sha;
+
+  const treeUpdatePayload = files.map((file) => ({
+    path: file.path,
+    mode: '100644',
+    type: 'blob',
+    content: file.content,
+  }));
+
+  const newTree = await createTree(pat, repoFullName, baseTreeSha, treeUpdatePayload);
+  const newCommit = await createCommit(
+    pat,
+    repoFullName,
+    commitMessage,
+    newTree.sha,
+    latestCommitSha,
+  );
+
+  await updateRef(pat, repoFullName, branch, newCommit.sha);
+
+  const savedFileEntries = await Promise.all(
+    files.map(async (file) => {
+      const sha = await getFileSha(pat, repoFullName, file.path, branch);
+      return sha ? ([file.path, sha] as const) : null;
+    }),
+  );
+
+  return {
+    commitSha: newCommit.sha,
+    fileShas: Object.fromEntries(
+      savedFileEntries.filter(
+        (entry): entry is readonly [string, string] => entry !== null,
+      ),
+    ),
+  };
 }
 
 // Fetch file commit history

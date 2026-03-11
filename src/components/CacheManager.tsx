@@ -18,7 +18,8 @@ interface CacheManagerProps {
   onOpenChange: (open: boolean) => void;
   currentRepo?: string;
   currentBranch?: string;
-  onRestoreFile?: (filePath: string, content: any) => void;
+  onRestoreFile?: (file: CachedFileData) => void;
+  onCacheChanged?: () => void;
 }
 
 export const CacheManager: React.FC<CacheManagerProps> = ({
@@ -26,7 +27,8 @@ export const CacheManager: React.FC<CacheManagerProps> = ({
   onOpenChange,
   currentRepo,
   currentBranch,
-  onRestoreFile
+  onRestoreFile,
+  onCacheChanged
 }) => {
   const [cachedFiles, setCachedFiles] = useState<CachedFileData[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -51,6 +53,7 @@ export const CacheManager: React.FC<CacheManagerProps> = ({
   const handleDeleteFile = async (file: CachedFileData) => {
     try {
       await deleteCachedFile(file.repoFullName, file.branch, file.filePath);
+      onCacheChanged?.();
       await loadCachedFiles(); // 重新加载列表
     } catch (err) {
       console.error('Failed to delete cached file:', err);
@@ -62,6 +65,7 @@ export const CacheManager: React.FC<CacheManagerProps> = ({
   const handleClearAllCache = async () => {
     try {
       await clearCachedFiles();
+      onCacheChanged?.();
       setCachedFiles([]);
     } catch (err) {
       console.error('Failed to clear all cache:', err);
@@ -75,6 +79,7 @@ export const CacheManager: React.FC<CacheManagerProps> = ({
     
     try {
       await clearCachedFiles(currentRepo, currentBranch);
+      onCacheChanged?.();
       await loadCachedFiles(); // 重新加载列表
     } catch (err) {
       console.error('Failed to clear current cache:', err);
@@ -85,7 +90,7 @@ export const CacheManager: React.FC<CacheManagerProps> = ({
   // 恢复文件
   const handleRestoreFile = (file: CachedFileData) => {
     if (onRestoreFile) {
-      onRestoreFile(file.filePath, file.content);
+      onRestoreFile(file);
     }
     onOpenChange(false);
   };

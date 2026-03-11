@@ -8,6 +8,8 @@
     "branchSelectPlaceholderSelect": "Select branch...",
     "branchSelectPlaceholderNoRepo": "Select repository first",
     "branchSelectPlaceholderNoBranches": "No branches found",
+    "bulkSaveButtonTitle": "Save all unsaved files in one commit",
+    "bulkSaveButtonLabel": "Save All",
     "createFileButtonTitle": "Create new file",
     "settingsButtonTitle": "Settings",
     "rightPanelTitle": "Right Panel",
@@ -102,5 +104,23 @@
     "unknownAuthor": "Unknown Author",
     "viewOnGithub": "View commit on GitHub",
     "openButton": "Open"
+  },
+  "saveDialog": {
+    "title": "Save File",
+    "description": "Enter a commit message for saving \"{{fileName}}\".",
+    "descriptionBatch": "Enter one commit message to save {{count}} files.",
+    "filesLabel": "Files to save",
+    "moreFilesLabel": "And {{count}} more files...",
+    "commitMessageLabel": "Commit Message",
+    "commitMessagePlaceholder": "e.g., Update diagram with new flow",
+    "cancelButton": "Cancel",
+    "saveButton": "Save",
+    "saveAllButton": "Save All",
+    "savingButton": "Saving...",
+    "missingInfoError": "Missing required information (PAT, repo, branch, path, or commit message).",
+    "getContentError": "Could not retrieve latest content from editor.",
+    "getContentErrorForFiles": "Could not retrieve the latest content for: {{fileNames}}",
+    "unknownApiError": "An unknown error occurred during save.",
+    "errorTitle": "Save Failed"
   }
 }

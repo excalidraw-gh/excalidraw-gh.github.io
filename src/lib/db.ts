@@ -1,5 +1,6 @@
 // vite-project/src/lib/db.ts
 import { openDB, DBSchema, IDBPDatabase } from 'idb';
+import type { ExcalidrawSceneData } from './excalidrawScene';
 
 const DB_NAME = 'githubPatStore';
 const PAT_STORE_NAME = 'patStore';
@@ -11,12 +12,9 @@ export interface CachedFileData {
   filePath: string;
   repoFullName: string;
   branch: string;
-  content: {
-    elements: readonly any[];
-    appState?: any;
-    files?: any;
-  };
+  content: ExcalidrawSceneData;
   lastModified: number; // 时间戳
+  baseSnapshot?: string; // 远端/已保存版本的快照，用于恢复 dirty 状态
   originalSha?: string; // 原始文件的SHA，用于跟踪版本
 }
 

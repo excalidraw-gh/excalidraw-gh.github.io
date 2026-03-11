@@ -8,6 +8,8 @@
     "branchSelectPlaceholderSelect": "选择分支...",
     "branchSelectPlaceholderNoRepo": "请先选择仓库",
     "branchSelectPlaceholderNoBranches": "未找到分支",
+    "bulkSaveButtonTitle": "批量保存当前所有未提交的文件",
+    "bulkSaveButtonLabel": "批量保存",
     "createFileButtonTitle": "创建新文件",
     "settingsButtonTitle": "设置",
     "rightPanelTitle": "右侧面板",
@@ -106,13 +108,18 @@
   "saveDialog": {
     "title": "保存文件",
     "description": "为保存 \"{{fileName}}\" 输入提交信息。",
+    "descriptionBatch": "为这 {{count}} 个文件输入一次提交信息。",
+    "filesLabel": "待保存文件",
+    "moreFilesLabel": "另外还有 {{count}} 个文件...",
     "commitMessageLabel": "提交信息",
     "commitMessagePlaceholder": "例如：更新图表，包含新的流程",
     "cancelButton": "取消",
     "saveButton": "保存",
+    "saveAllButton": "全部保存",
     "savingButton": "正在保存...",
     "missingInfoError": "缺少必要信息（PAT、仓库、分支、路径或提交信息）。",
     "getContentError": "无法从编辑器获取最新内容。",
+    "getContentErrorForFiles": "无法获取以下文件的最新内容：{{fileNames}}",
     "unknownApiError": "保存过程中发生未知错误。",
     "errorTitle": "保存失败"
   }
