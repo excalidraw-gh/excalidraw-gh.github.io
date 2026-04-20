@@ -11,6 +11,8 @@
     "bulkSaveButtonTitle": "批量保存当前所有未提交的文件",
     "bulkSaveButtonLabel": "批量保存",
     "createFileButtonTitle": "创建新文件",
+    "collapseGitPanelTitle": "收起 Git 面板",
+    "expandGitPanelTitle": "展开 Git 面板",
     "settingsButtonTitle": "设置",
     "rightPanelTitle": "右侧面板",
     "rightPanelDesc": "此面板占据剩余空间。",

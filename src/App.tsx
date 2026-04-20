@@ -6,6 +6,7 @@ import {
   Panel,
   PanelGroup,
   PanelResizeHandle,
+  type ImperativePanelHandle,
 } from "react-resizable-panels";
 import "./panel-styles.css";
 import { GithubPatInput } from "./components/GithubPatInput";
@@ -24,7 +25,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Settings, Plus, GitBranch, Loader2, Database, Save } from 'lucide-react'; // 添加Database图标
+import { Settings, Plus, GitBranch, Loader2, Database, Save, ChevronLeft, ChevronRight } from 'lucide-react'; // 添加Database图标
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 // import { Label } from "@/components/ui/label"; // Removed unused import
@@ -83,6 +84,7 @@ async function getGithubFileContent(t: Function, pat: string, repoFullName: stri
 
 
 function App() {
+  const LEFT_PANEL_DEFAULT_SIZE = 20;
   const { t } = useTranslation();
   const navigate = useNavigate(); // 路由导航hook
   const location = useLocation(); // 当前路由位置hook
@@ -113,6 +115,7 @@ function App() {
   const [openedFileBaselineSnapshot, setOpenedFileBaselineSnapshot] = useState<string | null>(null);
 
   const browserRef = useRef<GithubFileBrowserRef>(null);
+  const leftPanelRef = useRef<ImperativePanelHandle>(null);
   const excalidrawWrapperRef = useRef<ExcalidrawWrapperRef>(null); // Ref for ExcalidrawWrapper
 
   // State for tracking modified files
@@ -123,6 +126,8 @@ function App() {
   const [filePathsToSave, setFilePathsToSave] = useState<string[]>([]);
   const [fileToOpenAfterCreate, setFileToOpenAfterCreate] = useState<string | null>(null); // State to trigger opening after creation
   const [showCacheManager, setShowCacheManager] = useState(false); // 缓存管理器状态
+  const [isLeftPanelCollapsed, setIsLeftPanelCollapsed] = useState(false);
+  const [leftPanelSize, setLeftPanelSize] = useState(LEFT_PANEL_DEFAULT_SIZE);
 
   // 路由同步状态
   const [isInitializing, setIsInitializing] = useState(true); // 标记是否正在初始化
@@ -684,9 +689,40 @@ function App() {
     refreshModifiedFilesFromCache(selectedRepo, selectedBranch);
   }, [selectedRepo, selectedBranch, refreshModifiedFilesFromCache]);
 
+  const handleToggleLeftPanel = useCallback(() => {
+    const leftPanel = leftPanelRef.current;
+
+    if (!leftPanel) {
+      return;
+    }
+
+    if (isLeftPanelCollapsed) {
+      leftPanel.resize(leftPanelSize > 0 ? leftPanelSize : LEFT_PANEL_DEFAULT_SIZE);
+      setIsLeftPanelCollapsed(false);
+      return;
+    }
+
+    leftPanel.collapse();
+  }, [isLeftPanelCollapsed, leftPanelSize]);
+
   return (<> {/* Wrap in fragment */}
     <PanelGroup direction="horizontal" className="h-screen w-screen">
-      <Panel defaultSize={20} minSize={20} maxSize={50} className="bg-gray-100 p-4 flex flex-col">
+      <Panel
+        ref={leftPanelRef}
+        defaultSize={LEFT_PANEL_DEFAULT_SIZE}
+        minSize={20}
+        maxSize={50}
+        collapsible
+        collapsedSize={0}
+        onCollapse={() => setIsLeftPanelCollapsed(true)}
+        onExpand={() => setIsLeftPanelCollapsed(false)}
+        onResize={(size) => {
+          if (size > 0) {
+            setLeftPanelSize(size);
+          }
+        }}
+        className={`bg-gray-100 flex flex-col transition-[padding] duration-200 ${isLeftPanelCollapsed ? 'overflow-hidden p-0' : 'p-4'}`}
+      >
         {/* Header Section: Repo Selector and Settings Button */}
         <div className="flex items-center space-x-2 mb-2 flex-shrink-0">
           {currentPat && (
@@ -727,6 +763,16 @@ function App() {
               </Dialog>
             </>
           )}
+          <Button
+            variant="outline"
+            size="icon"
+            className="ml-auto flex-shrink-0"
+            title={t('app.collapseGitPanelTitle')}
+            aria-label={t('app.collapseGitPanelTitle')}
+            onClick={handleToggleLeftPanel}
+          >
+            <ChevronLeft className="h-4 w-4" />
+          </Button>
         </div>
         {/* Branch Selector and Create Button Section */}
         {currentPat && (
@@ -809,7 +855,7 @@ function App() {
         </div>
       </Panel>
 
-      <PanelResizeHandle className="flex items-center justify-center w-2 bg-gray-200 hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 transition-colors duration-150 ease-in-out group">
+      <PanelResizeHandle className={`flex items-center justify-center bg-gray-200 hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 transition-all duration-150 ease-in-out group ${isLeftPanelCollapsed ? 'w-0 opacity-0 pointer-events-none' : 'w-2'}`}>
          <div className="flex flex-col space-y-1 group-hover:space-y-[5px] transition-all duration-150 ease-in-out">
           <div className="w-1 h-1 bg-gray-500 rounded-full group-hover:bg-blue-600"></div>
           <div className="w-1 h-1 bg-gray-500 rounded-full group-hover:bg-blue-600"></div>
@@ -818,7 +864,19 @@ function App() {
       </PanelResizeHandle>
 
       {/* Right Panel - Excalidraw Area */}
-      <Panel defaultSize={80} className="bg-white flex flex-col">
+      <Panel defaultSize={80} className="bg-white flex flex-col relative">
+        {isLeftPanelCollapsed && (
+          <Button
+            variant="outline"
+            size="icon"
+            className="absolute left-3 top-3 z-10 h-9 w-9 rounded-full shadow-sm"
+            title={t('app.expandGitPanelTitle')}
+            aria-label={t('app.expandGitPanelTitle')}
+            onClick={handleToggleLeftPanel}
+          >
+            <ChevronRight className="h-4 w-4" />
+          </Button>
+        )}
         {isFileLoading ? (
             <div className="flex-grow flex items-center justify-center text-muted-foreground">
                 <Loader2 className="mr-2 h-5 w-5 animate-spin" />

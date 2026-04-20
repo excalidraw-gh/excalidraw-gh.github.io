@@ -11,6 +11,8 @@
     "bulkSaveButtonTitle": "Save all unsaved files in one commit",
     "bulkSaveButtonLabel": "Save All",
     "createFileButtonTitle": "Create new file",
+    "collapseGitPanelTitle": "Collapse Git panel",
+    "expandGitPanelTitle": "Expand Git panel",
     "settingsButtonTitle": "Settings",
     "rightPanelTitle": "Right Panel",
     "rightPanelDesc": "This panel takes the remaining space.",
