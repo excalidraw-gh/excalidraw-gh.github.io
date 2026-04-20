@@ -5,6 +5,7 @@ import {
   Panel,
   PanelGroup,
   PanelResizeHandle,
+  type ImperativePanelHandle,
 } from "react-resizable-panels";
 import "./panel-styles.css";
 import { GithubPatInput } from "./components/GithubPatInput";
@@ -20,7 +21,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Settings, Plus, GitBranch, Loader2, Save } from 'lucide-react';
+import { Settings, Plus, GitBranch, Loader2, Save, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 // import { Label } from "@/components/ui/label"; // Removed unused import
@@ -154,6 +155,7 @@ function App() {
   const [createFileError, setCreateFileError] = useState<string | null>(null);
   const [isCreatingFile, setIsCreatingFile] = useState(false);
   const [showSettingsDialog, setShowSettingsDialog] = useState(false);
+  const [isGitPanelCollapsed, setIsGitPanelCollapsed] = useState(false);
 
   // State for opened Excalidraw file
   const [openedFilePath, setOpenedFilePath] = useState<string | null>(null);
@@ -165,6 +167,7 @@ function App() {
 
   const browserRef = useRef<GithubFileBrowserRef>(null);
   const excalidrawWrapperRef = useRef<ExcalidrawWrapperRef>(null); // Ref for ExcalidrawWrapper
+  const gitPanelRef = useRef<ImperativePanelHandle | null>(null);
 
   // State for tracking modified files
   const [modifiedFiles, setModifiedFiles] = useState<Set<string>>(new Set());
@@ -287,6 +290,12 @@ function App() {
         }
     };
    const handleBranchChange = (branchName: string) => { setSelectedBranch(branchName); setSelectedFilePath(null); setOpenedFilePath(null); setOpenedFileContent(null); }; // 新增：切换分支时清除选中文件
+   const collapseGitPanel = useCallback(() => {
+      gitPanelRef.current?.collapse();
+   }, []);
+   const expandGitPanel = useCallback(() => {
+      gitPanelRef.current?.expand();
+   }, []);
    const handleCreateFileSubmit = async (event: React.FormEvent) => {
         event.preventDefault();
         const trimmedPath = newFilePath.trim();
@@ -674,121 +683,144 @@ function App() {
 
   return (<> {/* Wrap in fragment */}
     <PanelGroup direction="horizontal" className="h-screen w-screen">
-      <Panel defaultSize={20} minSize={20} maxSize={50} className="bg-gray-100 p-4 flex flex-col">
-        {/* Header Section: Repo Selector and Settings Button */}
-        <div className="flex items-center space-x-2 mb-2 flex-shrink-0">
-          {currentPat && (
-            <>
-              <Select value={selectedRepo ?? ""} onValueChange={handleRepoChange} disabled={isLoadingRepos || repos.length === 0}>
-                <SelectTrigger id="repo-select-app" className="flex-grow min-w-[180px]">
-                  <span className="mr-2">{t('app.repoSelectorTitle')}</span>
-                  <SelectValue placeholder={isLoadingRepos ? t('app.repoSelectPlaceholderLoading') : t('app.repoSelectPlaceholderSelect')} />
-                </SelectTrigger>
-                <SelectContent>
-                  {isLoadingRepos ? <SelectItem value="loading" disabled><Loader2 className="mr-2 h-4 w-4 animate-spin" />{t('app.repoSelectPlaceholderLoading')}</SelectItem>
-                   : repos.length === 0 ? <SelectItem value="no-repos" disabled>{t('app.repoSelectPlaceholderNoRepos')}</SelectItem>
-                   : repos.map(repo => <SelectItem key={repo.id} value={repo.full_name}>{repo.full_name} {repo.private ? "🔒" : ""}</SelectItem>)}
-                </SelectContent>
-              </Select>
-              <Dialog open={showSettingsDialog} onOpenChange={setShowSettingsDialog}>
-                <DialogTrigger asChild>
-                  <Button variant="outline" size="icon" title={t('app.settingsButtonTitle')}><Settings className="h-4 w-4" /></Button>
-                </DialogTrigger>
-                <DialogContent className="sm:max-w-[425px]">
-                  <DialogHeader>
-                    <DialogTitle>{t('patInput.title')}</DialogTitle>
-                    <DialogDescription>{t('patInput.description')}</DialogDescription>
-                  </DialogHeader>
-                  <GithubPatInput initialPat={currentPat} onPatSaved={handlePatSaved} onPatCleared={handlePatCleared} />
-                   <DialogFooter>
-                       <DialogClose asChild><Button type="button" variant="outline">{t('patInput.closeButton')}</Button></DialogClose>
-                   </DialogFooter>
-                </DialogContent>
-              </Dialog>
-            </>
-          )}
-        </div>
-        {/* Branch Selector and Create Button Section */}
-        {currentPat && (
-          <div className="flex items-center space-x-2 mb-4 flex-shrink-0">
-            <Select value={selectedBranch ?? ""} onValueChange={handleBranchChange} disabled={!selectedRepo || isLoadingBranches || branches.length === 0}>
-              <SelectTrigger id="branch-select-app" className="flex-grow min-w-[100px]">
-                <SelectValue placeholder={isLoadingBranches ? t('app.branchSelectPlaceholderLoading') : t('app.branchSelectPlaceholderSelect')} />
-              </SelectTrigger>
-              <SelectContent>
-                {isLoadingBranches ? <SelectItem value="loading" disabled><Loader2 className="mr-2 h-4 w-4 animate-spin" />{t('app.branchSelectPlaceholderLoading')}</SelectItem>
-                 : branches.length === 0 ? <SelectItem value="no-branches" disabled>{selectedRepo ? t('app.branchSelectPlaceholderNoBranches') : t('app.branchSelectPlaceholderNoRepo')}</SelectItem>
-                 : branches.map(branch => <SelectItem key={branch.commit.sha} value={branch.name}><GitBranch className="mr-2 h-4 w-4" />{branch.name} {branch.protected ? "🛡️" : ""}</SelectItem>)}
-              </SelectContent>
-            </Select>
-            <Dialog open={showCreateFileDialog} onOpenChange={setShowCreateFileDialog}>
-              <DialogTrigger asChild>
-                <Button variant="outline" size="icon" disabled={!selectedBranch} title={t('app.createFileButtonTitle')}><Plus className="h-4 w-4" /></Button>
-              </DialogTrigger>
-              <DialogContent>
-                 <DialogHeader>
-                    <DialogTitle>{t('createFileDialog.title')}</DialogTitle>
-                    {/* <DialogDescription>{t('createFileDialog.description')}</DialogDescription> */}
-                    </DialogHeader>
-                    <form onSubmit={handleCreateFileSubmit} className="space-y-4">
-                    <div className="space-y-2">
-                        {/* <Label htmlFor="new-file-path-app">{t('createFileDialog.pathLabel')}</Label> */}
-                        <div className="flex items-center space-x-1">
-                          <Input id="new-file-path-app" className="flex-grow" value={newFilePath} onChange={(e) => { setNewFilePath(e.target.value); setCreateFileError(null); }} placeholder={t('createFileDialog.pathPlaceholder')} disabled={isCreatingFile} required />
-                          <span className="text-sm text-muted-foreground flex-shrink-0">.excalidraw</span>
-                        </div>
-                    </div>
-                    {createFileError && <Alert variant="destructive"><AlertTitle>{t('createFileDialog.title')}</AlertTitle><AlertDescription>{t('createFileDialog.apiError', { filePath: newFilePath, error: createFileError })}</AlertDescription></Alert>}
-                    <DialogFooter>
-                        <DialogClose asChild><Button type="button" variant="outline" disabled={isCreatingFile}>{t('createFileDialog.cancelButton')}</Button></DialogClose>
-                        <Button type="submit" disabled={isCreatingFile || !newFilePath.trim()}>
-                        {isCreatingFile && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                        {isCreatingFile ? t('createFileDialog.creatingButton') : t('createFileDialog.createButton')}
-                        </Button>
-                    </DialogFooter>
-                    </form>
-              </DialogContent>
-            </Dialog>
+      <Panel
+        ref={gitPanelRef}
+        defaultSize={20}
+        minSize={15}
+        maxSize={50}
+        collapsible
+        collapsedSize={0}
+        onCollapse={() => setIsGitPanelCollapsed(true)}
+        onExpand={() => setIsGitPanelCollapsed(false)}
+        className="flex flex-col overflow-hidden bg-gray-100"
+      >
+        <div className="flex h-full flex-col p-4">
+          {/* Header Section: Repo Selector and Settings Button */}
+          <div className="mb-2 flex items-center gap-2 flex-shrink-0">
+            <div className="min-w-0 flex-1">
+              {currentPat && (
+                <div className="flex items-center space-x-2">
+                  <Select value={selectedRepo ?? ""} onValueChange={handleRepoChange} disabled={isLoadingRepos || repos.length === 0}>
+                    <SelectTrigger id="repo-select-app" className="flex-grow min-w-[180px]">
+                      <span className="mr-2">{t('app.repoSelectorTitle')}</span>
+                      <SelectValue placeholder={isLoadingRepos ? t('app.repoSelectPlaceholderLoading') : t('app.repoSelectPlaceholderSelect')} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {isLoadingRepos ? <SelectItem value="loading" disabled><Loader2 className="mr-2 h-4 w-4 animate-spin" />{t('app.repoSelectPlaceholderLoading')}</SelectItem>
+                       : repos.length === 0 ? <SelectItem value="no-repos" disabled>{t('app.repoSelectPlaceholderNoRepos')}</SelectItem>
+                       : repos.map(repo => <SelectItem key={repo.id} value={repo.full_name}>{repo.full_name} {repo.private ? "🔒" : ""}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                  <Dialog open={showSettingsDialog} onOpenChange={setShowSettingsDialog}>
+                    <DialogTrigger asChild>
+                      <Button variant="outline" size="icon" title={t('app.settingsButtonTitle')} aria-label={t('app.settingsButtonTitle')}><Settings className="h-4 w-4" /></Button>
+                    </DialogTrigger>
+                    <DialogContent className="sm:max-w-[425px]">
+                      <DialogHeader>
+                        <DialogTitle>{t('patInput.title')}</DialogTitle>
+                        <DialogDescription>{t('patInput.description')}</DialogDescription>
+                      </DialogHeader>
+                      <GithubPatInput initialPat={currentPat} onPatSaved={handlePatSaved} onPatCleared={handlePatCleared} />
+                       <DialogFooter>
+                           <DialogClose asChild><Button type="button" variant="outline">{t('patInput.closeButton')}</Button></DialogClose>
+                       </DialogFooter>
+                    </DialogContent>
+                  </Dialog>
+                </div>
+              )}
+            </div>
             <Button
-              variant="outline"
-              disabled={!selectedBranch || modifiedFiles.size === 0 || isBatchSaving}
-              onClick={openBatchCommitDialog}
-              title={t('batchSave.buttonTitle', '批量提交全部未保存文件')}
+              variant="ghost"
+              size="icon"
+              onClick={collapseGitPanel}
+              title={t('app.collapseGitPanelTitle')}
+              aria-label={t('app.collapseGitPanelTitle')}
             >
-              {isBatchSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
-              {t('batchSave.buttonLabel', '全部保存')}
+              <PanelLeftClose className="h-4 w-4" />
             </Button>
           </div>
-        )}
-        {/* Repo/Branch Loading Errors */}
-        {repoBranchError && (
-            <Alert variant="destructive" className="mb-4 flex-shrink-0">
-                <AlertTitle>{t('app.loadingErrorTitle')}</AlertTitle>
-                <AlertDescription>{repoBranchError}</AlertDescription>
-            </Alert>
-        )}
-        {/* Main Content Area (Left Panel) */}
-        <div className="flex-grow overflow-y-auto">
-          {isLoadingPat ? (
-            <div className="flex items-center justify-center h-20"><p className="text-muted-foreground">{t('app.loadingPat')}</p></div>
-          ) : currentPat ? (
-            <GithubFileBrowser
-                ref={browserRef}
-                pat={currentPat}
-                selectedRepo={selectedRepo}
-                selectedBranch={selectedBranch}
-                onFileNodeClick={handleFileNodeClick}
-                selectedFilePath={selectedFilePath}
-                modifiedFiles={modifiedFiles} // Pass down modified files set
-                onSaveRequest={handleSaveRequest} // Pass down save request handler
-            />
-          ) : (
-            <GithubPatInput onPatSaved={handlePatSaved} onPatCleared={handlePatCleared} />
+          {/* Branch Selector and Create Button Section */}
+          {currentPat && (
+            <div className="flex items-center space-x-2 mb-4 flex-shrink-0">
+              <Select value={selectedBranch ?? ""} onValueChange={handleBranchChange} disabled={!selectedRepo || isLoadingBranches || branches.length === 0}>
+                <SelectTrigger id="branch-select-app" className="flex-grow min-w-[100px]">
+                  <SelectValue placeholder={isLoadingBranches ? t('app.branchSelectPlaceholderLoading') : t('app.branchSelectPlaceholderSelect')} />
+                </SelectTrigger>
+                <SelectContent>
+                  {isLoadingBranches ? <SelectItem value="loading" disabled><Loader2 className="mr-2 h-4 w-4 animate-spin" />{t('app.branchSelectPlaceholderLoading')}</SelectItem>
+                   : branches.length === 0 ? <SelectItem value="no-branches" disabled>{selectedRepo ? t('app.branchSelectPlaceholderNoBranches') : t('app.branchSelectPlaceholderNoRepo')}</SelectItem>
+                   : branches.map(branch => <SelectItem key={branch.commit.sha} value={branch.name}><GitBranch className="mr-2 h-4 w-4" />{branch.name} {branch.protected ? "🛡️" : ""}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              <Dialog open={showCreateFileDialog} onOpenChange={setShowCreateFileDialog}>
+                <DialogTrigger asChild>
+                  <Button variant="outline" size="icon" disabled={!selectedBranch} title={t('app.createFileButtonTitle')} aria-label={t('app.createFileButtonTitle')}><Plus className="h-4 w-4" /></Button>
+                </DialogTrigger>
+                <DialogContent>
+                   <DialogHeader>
+                      <DialogTitle>{t('createFileDialog.title')}</DialogTitle>
+                      {/* <DialogDescription>{t('createFileDialog.description')}</DialogDescription> */}
+                      </DialogHeader>
+                      <form onSubmit={handleCreateFileSubmit} className="space-y-4">
+                      <div className="space-y-2">
+                          {/* <Label htmlFor="new-file-path-app">{t('createFileDialog.pathLabel')}</Label> */}
+                          <div className="flex items-center space-x-1">
+                            <Input id="new-file-path-app" className="flex-grow" value={newFilePath} onChange={(e) => { setNewFilePath(e.target.value); setCreateFileError(null); }} placeholder={t('createFileDialog.pathPlaceholder')} disabled={isCreatingFile} required />
+                            <span className="text-sm text-muted-foreground flex-shrink-0">.excalidraw</span>
+                          </div>
+                      </div>
+                      {createFileError && <Alert variant="destructive"><AlertTitle>{t('createFileDialog.title')}</AlertTitle><AlertDescription>{t('createFileDialog.apiError', { filePath: newFilePath, error: createFileError })}</AlertDescription></Alert>}
+                      <DialogFooter>
+                          <DialogClose asChild><Button type="button" variant="outline" disabled={isCreatingFile}>{t('createFileDialog.cancelButton')}</Button></DialogClose>
+                          <Button type="submit" disabled={isCreatingFile || !newFilePath.trim()}>
+                          {isCreatingFile && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                          {isCreatingFile ? t('createFileDialog.creatingButton') : t('createFileDialog.createButton')}
+                          </Button>
+                      </DialogFooter>
+                      </form>
+                </DialogContent>
+              </Dialog>
+              <Button
+                variant="outline"
+                disabled={!selectedBranch || modifiedFiles.size === 0 || isBatchSaving}
+                onClick={openBatchCommitDialog}
+                title={t('batchSave.buttonTitle', '批量提交全部未保存文件')}
+              >
+                {isBatchSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
+                {t('batchSave.buttonLabel', '全部保存')}
+              </Button>
+            </div>
           )}
+          {/* Repo/Branch Loading Errors */}
+          {repoBranchError && (
+              <Alert variant="destructive" className="mb-4 flex-shrink-0">
+                  <AlertTitle>{t('app.loadingErrorTitle')}</AlertTitle>
+                  <AlertDescription>{repoBranchError}</AlertDescription>
+              </Alert>
+          )}
+          {/* Main Content Area (Left Panel) */}
+          <div className="flex-grow overflow-y-auto">
+            {isLoadingPat ? (
+              <div className="flex items-center justify-center h-20"><p className="text-muted-foreground">{t('app.loadingPat')}</p></div>
+            ) : currentPat ? (
+              <GithubFileBrowser
+                  ref={browserRef}
+                  pat={currentPat}
+                  selectedRepo={selectedRepo}
+                  selectedBranch={selectedBranch}
+                  onFileNodeClick={handleFileNodeClick}
+                  selectedFilePath={selectedFilePath}
+                  modifiedFiles={modifiedFiles} // Pass down modified files set
+                  onSaveRequest={handleSaveRequest} // Pass down save request handler
+              />
+            ) : (
+              <GithubPatInput onPatSaved={handlePatSaved} onPatCleared={handlePatCleared} />
+            )}
+          </div>
         </div>
       </Panel>
 
-      <PanelResizeHandle className="flex items-center justify-center w-2 bg-gray-200 hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 transition-colors duration-150 ease-in-out group">
+      <PanelResizeHandle className={`flex items-center justify-center bg-gray-200 hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 transition-all duration-150 ease-in-out group ${isGitPanelCollapsed ? 'pointer-events-none w-0 opacity-0' : 'w-2 opacity-100'}`}>
          <div className="flex flex-col space-y-1 group-hover:space-y-[5px] transition-all duration-150 ease-in-out">
           <div className="w-1 h-1 bg-gray-500 rounded-full group-hover:bg-blue-600"></div>
           <div className="w-1 h-1 bg-gray-500 rounded-full group-hover:bg-blue-600"></div>
@@ -797,7 +829,22 @@ function App() {
       </PanelResizeHandle>
 
       {/* Right Panel - Excalidraw Area */}
-      <Panel defaultSize={80} className="bg-white flex flex-col">
+      <Panel defaultSize={80} className="relative bg-white flex flex-col">
+        {isGitPanelCollapsed && (
+          <div className="absolute left-4 top-4 z-20">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={expandGitPanel}
+              title={t('app.expandGitPanelTitle')}
+              aria-label={t('app.expandGitPanelTitle')}
+              className="shadow-sm"
+            >
+              <PanelLeftOpen className="h-4 w-4" />
+              {t('app.expandGitPanelButton')}
+            </Button>
+          </div>
+        )}
         {isFileLoading ? (
             <div className="flex-grow flex items-center justify-center text-muted-foreground">
                 <Loader2 className="mr-2 h-5 w-5 animate-spin" />
